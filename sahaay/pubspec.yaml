@@ -1,0 +1,67 @@
+name: sahaay
+description: "SAHAAY — Turning Surplus Food Into Hope. A surplus-food redistribution platform connecting Providers, NGOs, and Volunteers."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # ---- State management (kept simple on purpose) ----
+  provider: ^6.1.2
+
+  # ---- Auth ----
+  firebase_core: ^3.6.0
+  firebase_auth: ^5.3.1
+  google_sign_in: ^6.2.1
+
+  # ---- Database / Storage ----
+  supabase_flutter: ^2.6.0
+
+  # ---- Networking (for the FastAPI AI service) ----
+  http: ^1.2.2
+  http_parser: ^4.0.2
+
+  # ---- Maps ----
+  google_maps_flutter: ^2.9.0
+  geolocator: ^13.0.1
+  geocoding: ^5.0.0
+
+  # ---- Images ----
+  image_picker: ^1.1.2
+  cached_network_image: ^3.4.1
+
+  # ---- Utilities ----
+  intl: ^0.19.0
+  uuid: ^4.5.1
+  fl_chart: ^0.69.0          # for impact / stats charts
+  shared_preferences: ^2.3.2 # local demo-mode flag + light caching
+  url_launcher: ^6.3.1       # opening PDF receipt links / maps app
+
+  cupertino_icons: ^1.0.8
+  path_provider: ^2.1.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  build_runner: ^2.4.13
+  flutter_launcher_icons: ^0.14.4
+  image_picker_platform_interface: ^2.11.1
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+    - assets/icons/
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/images/sahaay_icon.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/images/sahaay_icon.png"

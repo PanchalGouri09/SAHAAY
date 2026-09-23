@@ -1,0 +1,27 @@
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+*.iml
+
+# IDE
+.idea/
+.vscode/
+
+# Platform build artifacts
+android/.gradle
+android/app/debug
+android/app/profile
+android/app/release
+ios/Pods/
+ios/.symlinks/
+
+# SAHAAY: never commit real secrets
+env.json
+lib/firebase_options.dart
+android/app/google-services.json
+ios/Runner/GoogleService-Info.plist
