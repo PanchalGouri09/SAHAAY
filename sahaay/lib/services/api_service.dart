@@ -198,6 +198,79 @@ class ApiService {
     return bytes;
   }
 
+  /// Admin — real-time overview counters for the dashboard header cards.
+  Future<Map<String, dynamic>> getAdminSummary() =>
+      _request('GET', '/api/v1/admin/summary');
+
+  /// Admin — quantitative impact metrics (kg donated/redistributed, expiry,
+  /// redistributions, completed deliveries).
+  Future<Map<String, dynamic>> getAdminAnalytics() =>
+      _request('GET', '/api/v1/admin/analytics');
+
+  /// Admin — paginated user list with an optional role filter.
+  Future<Map<String, dynamic>> getAdminUsers({
+    String? role,
+    int page = 1,
+    int pageSize = 20,
+  }) =>
+      _adminList('users', role: role, page: page, pageSize: pageSize);
+
+  /// Admin — paginated provider (restaurant) list with owner labels.
+  Future<Map<String, dynamic>> getAdminProviders({
+    int page = 1,
+    int pageSize = 20,
+  }) =>
+      _adminList('providers', page: page, pageSize: pageSize);
+
+  /// Admin — paginated NGO list with owner labels.
+  Future<Map<String, dynamic>> getAdminNgos({
+    int page = 1,
+    int pageSize = 20,
+  }) =>
+      _adminList('ngos', page: page, pageSize: pageSize);
+
+  /// Admin — paginated volunteer list with owner labels.
+  Future<Map<String, dynamic>> getAdminVolunteers({
+    int page = 1,
+    int pageSize = 20,
+  }) =>
+      _adminList('volunteers', page: page, pageSize: pageSize);
+
+  /// Admin — paginated donation list (every status) enriched with the real
+  /// provider and surplus-prediction records.
+  Future<Map<String, dynamic>> getAdminDonations({
+    int page = 1,
+    int pageSize = 20,
+  }) =>
+      _adminList('donations', page: page, pageSize: pageSize);
+
+  /// Admin — paginated claim list enriched with donation and NGO context.
+  Future<Map<String, dynamic>> getAdminClaims({
+    int page = 1,
+    int pageSize = 20,
+  }) =>
+      _adminList('claims', page: page, pageSize: pageSize);
+
+  /// Admin — paginated delivery list enriched with donation/claim/NGO and
+  /// volunteer context.
+  Future<Map<String, dynamic>> getAdminDeliveries({
+    int page = 1,
+    int pageSize = 20,
+  }) =>
+      _adminList('deliveries', page: page, pageSize: pageSize);
+
+  /// Shared paginated list fetch: `/api/v1/admin/<resource>?page=&page_size=`.
+  Future<Map<String, dynamic>> _adminList(
+    String resource, {
+    String? role,
+    int page = 1,
+    int pageSize = 20,
+  }) {
+    final params = <String>['page=$page', 'page_size=$pageSize'];
+    if (role != null && role.isNotEmpty) params.add('role=$role');
+    return _request('GET', '/api/v1/admin/$resource?${params.join('&')}');
+  }
+
   /// Same auth guard as [_request] but returns the raw response bytes. Used
   /// when the response is a binary PDF instead of JSON.
   Future<List<int>> _rawRequest(

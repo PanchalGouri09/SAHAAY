@@ -5353,6 +5353,139 @@ class _VolunteerImpactTab extends StatelessWidget {
 // ADMIN DASHBOARD
 // =============================================================================
 
+/// Read-only admin resources backed by the `/api/v1/admin/*` endpoints.
+enum AdminResource {
+  users('Users', Icons.people_outline),
+  providers('Providers', Icons.storefront_outlined),
+  ngos('NGOs', Icons.apartment_outlined),
+  volunteers('Volunteers', Icons.volunteer_activism_outlined),
+  donations('Donations', Icons.receipt_long_outlined),
+  claims('Claims', Icons.assignment_turned_in_outlined),
+  deliveries('Deliveries', Icons.local_shipping_outlined);
+
+  final String label;
+  final IconData icon;
+  const AdminResource(this.label, this.icon);
+}
+
+/// Live overview counters from GET /api/v1/admin/summary.
+class AdminSummary {
+  final int totalUsers;
+  final int providers;
+  final int ngos;
+  final int volunteers;
+  final int totalDonations;
+  final int completedRedistributions;
+  final int pendingClaims;
+  final int activeDeliveries;
+  const AdminSummary({
+    required this.totalUsers,
+    required this.providers,
+    required this.ngos,
+    required this.volunteers,
+    required this.totalDonations,
+    required this.completedRedistributions,
+    required this.pendingClaims,
+    required this.activeDeliveries,
+  });
+
+  factory AdminSummary.fromBackend(Map<String, dynamic> json) => AdminSummary(
+        totalUsers: (json['total_users'] as num?)?.toInt() ?? 0,
+        providers: (json['providers'] as num?)?.toInt() ?? 0,
+        ngos: (json['ngos'] as num?)?.toInt() ?? 0,
+        volunteers: (json['volunteers'] as num?)?.toInt() ?? 0,
+        totalDonations: (json['total_donations'] as num?)?.toInt() ?? 0,
+        completedRedistributions:
+            (json['completed_redistributions'] as num?)?.toInt() ?? 0,
+        pendingClaims: (json['pending_claims'] as num?)?.toInt() ?? 0,
+        activeDeliveries: (json['active_deliveries'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// Impact metrics from GET /api/v1/admin/analytics.
+class AdminAnalytics {
+  final double totalFoodDonatedKg;
+  final double totalFoodRedistributedKg;
+  final int expiredDonations;
+  final int unclaimedAvailableDonations;
+  final int successfulRedistributions;
+  final int completedDeliveries;
+  const AdminAnalytics({
+    required this.totalFoodDonatedKg,
+    required this.totalFoodRedistributedKg,
+    required this.expiredDonations,
+    required this.unclaimedAvailableDonations,
+    required this.successfulRedistributions,
+    required this.completedDeliveries,
+  });
+
+  factory AdminAnalytics.fromBackend(Map<String, dynamic> json) =>
+      AdminAnalytics(
+        totalFoodDonatedKg:
+            (json['total_food_donated_kg'] as num?)?.toDouble() ?? 0,
+        totalFoodRedistributedKg:
+            (json['total_food_redistributed_kg'] as num?)?.toDouble() ?? 0,
+        expiredDonations: (json['expired_donations'] as num?)?.toInt() ?? 0,
+        unclaimedAvailableDonations:
+            (json['unclaimed_available_donations'] as num?)?.toInt() ?? 0,
+        successfulRedistributions:
+            (json['successful_redistributions'] as num?)?.toInt() ?? 0,
+        completedDeliveries:
+            (json['completed_deliveries'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// Integer-less kg label: "12" / "12.5" / "1.25".
+String _adminKgLabel(double value) {
+  if (value == value.roundToDouble()) return value.toStringAsFixed(0);
+  return value.toStringAsFixed(2).replaceFirst(RegExp(r'0+$'), '').replaceFirst(
+      RegExp(r'\.$'), '');
+}
+
+String _titleCase(String value) {
+  if (value.isEmpty) return value;
+  return value[0].toUpperCase() + value.substring(1);
+}
+
+Color _adminStatusColor(BuildContext context, String status) {
+  final c = AppColors.of(context);
+  switch (status) {
+    case 'accepted':
+    case 'in_transit':
+      return c.bluePrimary;
+    case 'completed':
+    case 'delivered':
+    case 'available':
+      return c.green;
+    case 'rejected':
+    case 'cancelled':
+    case 'failed':
+      return c.danger;
+    case 'pending':
+    case 'assigned':
+    case 'picked_up':
+    case 'claimed':
+    case 'pickup_assigned':
+      return c.warning;
+    default:
+      return c.textSecondary;
+  }
+}
+
+Color _adminRoleColor(BuildContext context, String role) {
+  final c = AppColors.of(context);
+  switch (role) {
+    case 'admin':
+      return c.green;
+    case 'ngo':
+      return c.warning;
+    case 'volunteer':
+      return c.bluePrimary;
+    default:
+      return c.textSecondary;
+  }
+}
+
 class AdminDashboardScreen extends StatefulWidget {
   const AdminDashboardScreen({super.key});
   @override
@@ -5363,6 +5496,57 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController =
       TabController(length: 3, vsync: this);
+
+  AdminSummary? _summary;
+  AdminAnalytics? _analytics;
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final api = context.read<AppState>().api;
+      final results = await Future.wait<dynamic>([
+        api.getAdminSummary(),
+        api.getAdminAnalytics(),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _summary = AdminSummary.fromBackend(
+            results[0] is Map<String, dynamic>
+                ? results[0] as Map<String, dynamic>
+                : <String, dynamic>{});
+        _analytics = AdminAnalytics.fromBackend(
+            results[1] is Map<String, dynamic>
+                ? results[1] as Map<String, dynamic>
+                : <String, dynamic>{});
+        _loading = false;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error =
+            _apiErrorMessage(e, fallback: 'Could not load the admin dashboard.');
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _error =
+            'Could not reach the server. Please check your connection and try again.';
+        _loading = false;
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -5412,10 +5596,16 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen>
         ],
         body: TabBarView(
           controller: _tabController,
-          children: const [
-            _AdminOverviewTab(),
-            _AdminManagementTab(),
-            _AdminReportsTab()
+          children: [
+            _AdminOverviewTab(
+              summary: _summary,
+              analytics: _analytics,
+              loading: _loading,
+              error: _error,
+              onRetry: _load,
+            ),
+            const _AdminManagementTab(),
+            _AdminReportsTab(analytics: _analytics),
           ],
         ),
       ),
@@ -5424,91 +5614,132 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen>
 }
 
 class _AdminOverviewTab extends StatelessWidget {
-  const _AdminOverviewTab();
+  final AdminSummary? summary;
+  final AdminAnalytics? analytics;
+  final bool loading;
+  final String? error;
+  final VoidCallback onRetry;
+  const _AdminOverviewTab({
+    required this.summary,
+    required this.analytics,
+    required this.loading,
+    required this.error,
+    required this.onRetry,
+  });
+
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(
-          AppSpacing.lg, AppSpacing.md, AppSpacing.lg, AppSpacing.lg),
-      children: [
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-              color: c.surfaceAlt, borderRadius: BorderRadius.circular(12)),
-          child: Row(children: [
-            Icon(Icons.info_outline, size: 18, color: c.textSecondary),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                'Live platform analytics will appear here once Supabase is connected.',
-                style: TextStyle(fontSize: 12, color: c.textSecondary),
-              ),
+    if (loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (error != null) {
+      return _AdminErrorBanner(message: error!, onRetry: onRetry);
+    }
+    final s = summary;
+    final a = analytics;
+    final isAllZero =
+        s == null || a == null || (s.totalUsers == 0 && s.providers == 0);
+    return RefreshIndicator(
+      onRefresh: () async => onRetry(),
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg, AppSpacing.md, AppSpacing.lg, AppSpacing.lg),
+        children: [
+          if (isAllZero)
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                  color: c.surfaceAlt,
+                  borderRadius: BorderRadius.circular(12)),
+              child: Row(children: [
+                Icon(Icons.info_outline, size: 18, color: c.textSecondary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'No platform activity yet — live numbers will appear here as providers, NGOs, and volunteers join.',
+                    style: TextStyle(fontSize: 12, color: c.textSecondary),
+                  ),
+                ),
+              ]),
             ),
-          ]),
-        ),
-        const SizedBox(height: AppSpacing.md),
-        GridView.count(
-          crossAxisCount: 2,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          crossAxisSpacing: 10,
-          mainAxisSpacing: 10,
-          childAspectRatio: 1.5,
-          children: const [
-            StatCard(
-                label: 'Total Users',
-                value: '0',
-                icon: Icons.people_outline,
-                emphasis: Emphasis.strong),
-            StatCard(
-                label: 'Providers',
-                value: '0',
-                icon: Icons.storefront_outlined,
-                emphasis: Emphasis.primary),
-            StatCard(label: 'NGOs', value: '0', icon: Icons.apartment_outlined),
-            StatCard(
-                label: 'Volunteers',
-                value: '0',
-                icon: Icons.volunteer_activism_outlined),
-            StatCard(
-                label: 'Completed Deliveries',
-                value: '0',
-                icon: Icons.local_shipping_outlined),
-            StatCard(
-                label: 'Food Redistributed',
-                value: '0 kg',
-                icon: Icons.scale_outlined),
-          ],
-        ),
-        const SizedBox(height: AppSpacing.lg),
-        const SectionHeader(title: 'Recent Activity'),
-        const SizedBox(height: 10),
-        const Card(
-          child: EmptyState(
-              icon: Icons.history_outlined,
-              message:
-                  'No recent activity yet — this will populate once the platform is live.'),
-        ),
-      ],
+          if (isAllZero) const SizedBox(height: AppSpacing.md),
+          GridView.count(
+            crossAxisCount: 2,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            childAspectRatio: 1.5,
+            children: [
+              StatCard(
+                  label: 'Total Users',
+                  value: '${s!.totalUsers}',
+                  icon: Icons.people_outline,
+                  emphasis: Emphasis.strong),
+              StatCard(
+                  label: 'Providers',
+                  value: '${s.providers}',
+                  icon: Icons.storefront_outlined,
+                  emphasis: Emphasis.primary),
+              StatCard(
+                  label: 'NGOs',
+                  value: '${s.ngos}',
+                  icon: Icons.apartment_outlined),
+              StatCard(
+                  label: 'Volunteers',
+                  value: '${s.volunteers}',
+                  icon: Icons.volunteer_activism_outlined),
+              StatCard(
+                  label: 'Completed Deliveries',
+                  value: '${a!.completedDeliveries}',
+                  icon: Icons.local_shipping_outlined),
+              StatCard(
+                  label: 'Food Redistributed',
+                  value: '${_adminKgLabel(a.totalFoodRedistributedKg)} kg',
+                  icon: Icons.scale_outlined),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.lg),
+          const SectionHeader(title: 'Recent Activity'),
+          const SizedBox(height: 10),
+          const Card(
+            child: EmptyState(
+                icon: Icons.history_outlined,
+                message:
+                    'No recent activity yet — this will populate as donations move through the platform.'),
+          ),
+        ],
+      ),
     );
   }
 }
 
-class _ActivityTile extends StatelessWidget {
-  final IconData icon;
-  final String text;
-  final String time;
-  const _ActivityTile(
-      {required this.icon, required this.text, required this.time});
+class _AdminErrorBanner extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+  const _AdminErrorBanner({required this.message, required this.onRetry});
+
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
-    return ListTile(
-      leading: Icon(icon, color: c.bluePrimary),
-      title: Text(text, style: const TextStyle(fontSize: 13)),
-      trailing:
-          Text(time, style: TextStyle(fontSize: 11, color: c.textSecondary)),
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.lg),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cloud_off_outlined, size: 40, color: c.textSecondary),
+            const SizedBox(height: 10),
+            Text(message,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: c.textSecondary)),
+            const SizedBox(height: 16),
+            SecondaryButton(label: 'Retry', onPressed: onRetry),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -5516,14 +5747,13 @@ class _ActivityTile extends StatelessWidget {
 class _AdminManagementTab extends StatelessWidget {
   const _AdminManagementTab();
   static const _items = [
-    ('User Management', Icons.manage_accounts_outlined),
-    ('Provider Management', Icons.storefront_outlined),
-    ('NGO Management', Icons.apartment_outlined),
-    ('Volunteer Management', Icons.volunteer_activism_outlined),
-    ('Donation Monitoring', Icons.receipt_long_outlined),
-    ('Claim Monitoring', Icons.assignment_turned_in_outlined),
-    ('Delivery Monitoring', Icons.local_shipping_outlined),
-    ('Matching Engine Configuration', Icons.tune_outlined),
+    (AdminResource.users, 'User Management'),
+    (AdminResource.providers, 'Provider Management'),
+    (AdminResource.ngos, 'NGO Management'),
+    (AdminResource.volunteers, 'Volunteer Management'),
+    (AdminResource.donations, 'Donation Monitoring'),
+    (AdminResource.claims, 'Claim Monitoring'),
+    (AdminResource.deliveries, 'Delivery Monitoring'),
   ];
 
   @override
@@ -5534,15 +5764,14 @@ class _AdminManagementTab extends StatelessWidget {
       itemCount: _items.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (context, i) {
-        final item = _items[i];
-        final label = item.$1;
-        final icon = item.$2;
+        final resource = _items[i].$1;
         return RoleCard(
-          icon: icon,
-          title: label,
-          subtitle: 'Backend-connected management screen (Phase 5).',
-          onTap: () => ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('$label will connect once Supabase is wired in.'))),
+          icon: resource.icon,
+          title: _items[i].$2,
+          subtitle:
+              'View all ${resource.label.toLowerCase()} across the platform.',
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => AdminListScreen(resource: resource))),
         );
       },
     );
@@ -5550,14 +5779,73 @@ class _AdminManagementTab extends StatelessWidget {
 }
 
 class _AdminReportsTab extends StatelessWidget {
-  const _AdminReportsTab();
+  final AdminAnalytics? analytics;
+  const _AdminReportsTab({required this.analytics});
+
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final a = analytics;
     return ListView(
       padding: const EdgeInsets.fromLTRB(
           AppSpacing.lg, AppSpacing.md, AppSpacing.lg, AppSpacing.lg),
       children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Icon(Icons.stacked_bar_chart_outlined, color: c.bluePrimary),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                      child: Text('Real Impact Metrics',
+                          style: TextStyle(fontWeight: FontWeight.w700))),
+                ]),
+                const SizedBox(height: 12),
+                if (a == null)
+                  const EmptyState(
+                      icon: Icons.monitor_heart_outlined,
+                      message: 'Loading live impact metrics…')
+                else ...[
+                  _AdminMetricRow(
+                      icon: Icons.scale_outlined,
+                      label: 'Food Donated',
+                      value: '${_adminKgLabel(a.totalFoodDonatedKg)} kg',
+                      color: c.bluePrimary),
+                  _AdminMetricRow(
+                      icon: Icons.volunteer_activism_outlined,
+                      label: 'Food Redistributed',
+                      value:
+                          '${_adminKgLabel(a.totalFoodRedistributedKg)} kg',
+                      color: c.green),
+                  _AdminMetricRow(
+                      icon: Icons.check_circle_outline,
+                      label: 'Successful Redistributions',
+                      value: '${a.successfulRedistributions}',
+                      color: c.green),
+                  _AdminMetricRow(
+                      icon: Icons.local_shipping_outlined,
+                      label: 'Completed Deliveries',
+                      value: '${a.completedDeliveries}',
+                      color: c.bluePrimary),
+                  _AdminMetricRow(
+                      icon: Icons.hourglass_empty,
+                      label: 'Expired Donations',
+                      value: '${a.expiredDonations}',
+                      color: c.danger),
+                  _AdminMetricRow(
+                      icon: Icons.inventory_outlined,
+                      label: 'Unclaimed Available',
+                      value: '${a.unclaimedAvailableDonations}',
+                      color: c.warning),
+                ],
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.lg),
         Card(
           child: Padding(
             padding: const EdgeInsets.all(AppSpacing.md),
@@ -5588,6 +5876,390 @@ class _AdminReportsTab extends StatelessWidget {
               MaterialPageRoute(builder: (_) => const LeaderboardScreen())),
         ),
       ],
+    );
+  }
+}
+
+class _AdminMetricRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+  const _AdminMetricRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(children: [
+        Container(
+          height: 40,
+          width: 40,
+          decoration: BoxDecoration(
+              color: color.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(12)),
+          child: Icon(icon, color: color, size: 20),
+        ),
+        const SizedBox(width: AppSpacing.md),
+        Expanded(
+            child:
+                Text(label, style: TextStyle(color: c.textSecondary))),
+        Text(value,
+            style: TextStyle(
+                fontWeight: FontWeight.w800, fontSize: 16, color: c.textPrimary)),
+      ]),
+    );
+  }
+}
+
+/// Read-only, paginated list screen for one admin resource backed by the
+/// `/api/v1/admin/*` endpoints. Reads real data through [AppState.api].
+class AdminListScreen extends StatefulWidget {
+  final AdminResource resource;
+  const AdminListScreen({super.key, required this.resource});
+
+  @override
+  State<AdminListScreen> createState() => _AdminListScreenState();
+}
+
+class _AdminListScreenState extends State<AdminListScreen> {
+  static const _pageSize = 50;
+  final List<Map<String, dynamic>> _items = [];
+  int _total = 0;
+  int _page = 1;
+  bool _loading = true;
+  String? _error;
+  String? _roleFilter;
+
+  bool get _hasMore => _items.length < _total;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<Map<String, dynamic>> _fetch({required int page}) {
+    final api = context.read<AppState>().api;
+    switch (widget.resource) {
+      case AdminResource.users:
+        return api.getAdminUsers(role: _roleFilter, page: page, pageSize: _pageSize);
+      case AdminResource.providers:
+        return api.getAdminProviders(page: page, pageSize: _pageSize);
+      case AdminResource.ngos:
+        return api.getAdminNgos(page: page, pageSize: _pageSize);
+      case AdminResource.volunteers:
+        return api.getAdminVolunteers(page: page, pageSize: _pageSize);
+      case AdminResource.donations:
+        return api.getAdminDonations(page: page, pageSize: _pageSize);
+      case AdminResource.claims:
+        return api.getAdminClaims(page: page, pageSize: _pageSize);
+      case AdminResource.deliveries:
+        return api.getAdminDeliveries(page: page, pageSize: _pageSize);
+    }
+  }
+
+  Future<void> _load({bool append = false}) async {
+    if (!append) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+    try {
+      final response = await _fetch(page: append ? _page + 1 : 1);
+      final rawItems = response['items'];
+      final list = <Map<String, dynamic>>[
+        for (final item in (rawItems is List ? rawItems : const <dynamic>[]))
+          if (item is Map<String, dynamic>) item,
+      ];
+      if (!mounted) return;
+      setState(() {
+        if (append) {
+          _page += 1;
+          _items.addAll(list);
+        } else {
+          _page = 1;
+          _items
+            ..clear()
+            ..addAll(list);
+        }
+        _total = (response['total'] as num?)?.toInt() ?? list.length;
+        _loading = false;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = _apiErrorMessage(
+            e, fallback: 'Could not load ${widget.resource.label}.');
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _error =
+            'Could not reach the server. Please check your connection and try again.';
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.resource.label),
+        actions: const [ThemeToggleButton()],
+      ),
+      body: Column(
+        children: [
+          if (widget.resource == AdminResource.users)
+            _AdminRoleFilterBar(
+              selected: _roleFilter,
+              onChanged: (role) {
+                setState(() => _roleFilter = role);
+                _load();
+              },
+            ),
+          Expanded(child: _buildBody(context)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody(BuildContext context) {
+    if (_loading && _items.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null && _items.isEmpty) {
+      return _AdminErrorBanner(message: _error!, onRetry: () => _load());
+    }
+    if (_items.isEmpty) {
+      final c = AppColors.of(context);
+      return ListView(
+        padding: const EdgeInsets.all(AppSpacing.lg),
+        children: [
+          EmptyState(
+              icon: widget.resource.icon,
+              message: 'No ${widget.resource.label.toLowerCase()} found yet.'),
+          const SizedBox(height: AppSpacing.md),
+          Center(
+            child: TextButton(
+              onPressed: () => _load(),
+              child: Text('Refresh', style: TextStyle(color: c.bluePrimary)),
+            ),
+          ),
+        ],
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: () => _load(),
+      child: ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(AppSpacing.lg),
+        itemCount: _items.length + (_hasMore ? 1 : 0),
+        separatorBuilder: (_, __) => const SizedBox(height: 10),
+        itemBuilder: (context, i) {
+          if (i == _items.length) {
+            return Center(
+              child: TextButton(
+                onPressed: () => _load(append: true),
+                child: const Text('Load more'),
+              ),
+            );
+          }
+          return _AdminResourceTile(
+              resource: widget.resource, item: _items[i]);
+        },
+      ),
+    );
+  }
+}
+
+class _AdminRoleFilterBar extends StatelessWidget {
+  final String? selected;
+  final ValueChanged<String?> onChanged;
+  const _AdminRoleFilterBar({required this.selected, required this.onChanged});
+
+  static const _allRoles = ['provider', 'ngo', 'volunteer', 'admin'];
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg, AppSpacing.sm, AppSpacing.lg, AppSpacing.xs),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(children: [
+          Padding(
+            padding: const EdgeInsets.only(right: AppSpacing.xs),
+            child: ChoiceChip(
+              label: const Text('All'),
+              selected: selected == null,
+              onSelected: (_) => onChanged(null),
+            ),
+          ),
+          for (final role in _allRoles)
+            Padding(
+              padding: const EdgeInsets.only(right: AppSpacing.xs),
+              child: ChoiceChip(
+                label: Text(_titleCase(role)),
+                selected: selected == role,
+                onSelected: (_) => onChanged(role),
+              ),
+            ),
+        ]),
+      ),
+    );
+  }
+}
+
+class _AdminResourceTile extends StatelessWidget {
+  final AdminResource resource;
+  final Map<String, dynamic> item;
+  const _AdminResourceTile({required this.resource, required this.item});
+
+  Map<String, dynamic> _nested(String key) {
+    final value = item[key];
+    return value is Map<String, dynamic> ? value : <String, dynamic>{};
+  }
+
+  String _titleOf() {
+    switch (resource) {
+      case AdminResource.users:
+        return item['full_name']?.toString() ??
+            item['email']?.toString() ??
+            '—';
+      case AdminResource.providers:
+        return item['organization_name']?.toString() ?? 'Untitled provider';
+      case AdminResource.ngos:
+        return item['organization_name']?.toString() ?? 'Untitled NGO';
+      case AdminResource.volunteers:
+        return item['user_full_name']?.toString() ?? 'Unnamed volunteer';
+      case AdminResource.donations:
+        return item['food_name']?.toString() ?? 'Untitled donation';
+      case AdminResource.claims:
+        return _nested('donation')['food_name']?.toString() ?? 'Food claim';
+      case AdminResource.deliveries:
+        return _nested('donation')['food_name']?.toString() ?? 'Food delivery';
+    }
+  }
+
+  String _subtitleOf() {
+    switch (resource) {
+      case AdminResource.users:
+        final email = item['email']?.toString() ?? '—';
+        return '$email • ${_titleCase(item['role']?.toString() ?? 'user')}';
+      case AdminResource.providers:
+        final owner = item['user_full_name']?.toString() ?? '';
+        final city = item['city']?.toString() ?? '';
+        return '$city • ${owner.isEmpty ? item['user_email'] ?? '' : owner}';
+      case AdminResource.ngos:
+        final city = item['city']?.toString() ?? '';
+        final capacity = item['food_capacity']?.toString() ?? '—';
+        return '$city • Capacity $capacity kg';
+      case AdminResource.volunteers:
+        final email = item['user_email']?.toString() ?? '';
+        final status = item['availability_status']?.toString() ?? '';
+        return '$email • ${_titleCase(status)}';
+      case AdminResource.donations:
+        final quantity = item['quantity']?.toString() ?? '—';
+        final unit = item['unit']?.toString() ?? '';
+        final provider = _nested('provider')['organization_name']?.toString();
+        return '$quantity $unit • ${provider ?? 'no provider'}';
+      case AdminResource.claims:
+        final ngo = _nested('ngo')['organization_name']?.toString();
+        final requested = item['requested_quantity']?.toString() ?? '—';
+        return '${ngo ?? 'no NGO'} • requested $requested';
+      case AdminResource.deliveries:
+        final ngo = _nested('ngo')['organization_name']?.toString();
+        final volunteer = _nested('volunteer')['user_full_name']?.toString();
+        return '${ngo ?? 'no NGO'} • ${volunteer ?? 'awaiting volunteer'}';
+    }
+  }
+
+  (String, Color)? _statusOf(BuildContext context) {
+    switch (resource) {
+      case AdminResource.users:
+        final role = item['role']?.toString() ?? '';
+        return (_titleCase(role), _adminRoleColor(context, role));
+      case AdminResource.providers:
+        final verified = item['verified'] == true;
+        return (verified ? 'Verified' : 'Unverified', verified
+            ? AppColors.of(context).green
+            : AppColors.of(context).warning);
+      case AdminResource.ngos:
+        final verified = item['verified'] == true;
+        return (verified ? 'Verified' : 'Unverified', verified
+            ? AppColors.of(context).green
+            : AppColors.of(context).warning);
+      case AdminResource.volunteers:
+        final status = item['availability_status']?.toString() ?? '';
+        return (_titleCase(status), _adminStatusColor(context, status));
+      case AdminResource.donations:
+        final status = item['status']?.toString() ?? '';
+        final donationStatus = _donationStatusFromBackend(status);
+        return (donationStatusLabel(donationStatus),
+            donationStatusColor(donationStatus, context));
+      case AdminResource.claims:
+      case AdminResource.deliveries:
+        final status = item['status']?.toString() ?? '';
+        return (_titleCase(status), _adminStatusColor(context, status));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final status = _statusOf(context);
+    return Card(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        onTap: () {},
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Row(
+            children: [
+              Container(
+                height: 44,
+                width: 44,
+                decoration: BoxDecoration(
+                    color: c.bluePrimary.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(12)),
+                child: Icon(resource.icon, color: c.bluePrimary, size: 20),
+              ),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(_titleOf(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 2),
+                    Text(_subtitleOf(),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: c.textSecondary, fontSize: 12.5)),
+                  ],
+                ),
+              ),
+              if (status != null) ...[
+                const SizedBox(width: AppSpacing.sm),
+                StatusChip(label: status.$1, color: status.$2),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

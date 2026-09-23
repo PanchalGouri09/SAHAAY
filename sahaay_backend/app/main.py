@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers import (
+    admin,
     ai_features,
     claims,
     deliveries,
@@ -55,6 +56,7 @@ app.include_router(donations.router, prefix="/api/v1")
 app.include_router(claims.router, prefix="/api/v1")
 app.include_router(deliveries.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
+app.include_router(admin.router, prefix="/api/v1")
 app.include_router(ai_features.router)
 
 
