@@ -1,5 +1,26 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- Location: pickup distance + the Google Maps work. Coarse is included
+         because the app only needs approximate pickup proximity, and FINE is
+         optional so a user can decline precise location and still use SAHAAY.
+         No ACCESS_BACKGROUND_LOCATION: SAHAAY does no background tracking. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.FINE_LOCATION"/>
+
+    <!-- Camera: attaching a food photo to a donation. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+
+    <!-- Donations, claims, pickups and delivery updates (Android 13+ runtime
+         prompt; ignored on Android 12 and below, where it is install-granted). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- Both the camera and GPS are optional so the app still installs on
+         devices without them; every feature degrades gracefully instead. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <uses-feature android:name="android.hardware.location" android:required="false"/>
+    <uses-feature android:name="android.hardware.location.gps" android:required="false"/>
+
     <application
         android:label="sahaay"
         android:name="${applicationName}"

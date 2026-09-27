@@ -17,6 +17,10 @@ Honesty rules:
 * a claim is only rejected when the donation is still eligible (status
   'available' and not past its expiry_time). Once a donation is claimed,
   expired, cancelled or completed it is never escalated by the scheduler.
+* rejecting a claim changes whether the donation still needs volunteer transport,
+  so the same shared recompute used by the claim router runs here too. It is a
+  function of the remaining live claims, so the manual endpoint and the scheduler
+  stay identical without this module introducing any background work of its own.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.schemas.ai import EscalationCheckRequest
+from app.services.volunteer_transport import recompute_volunteer_transport_required
 
 _NO_CLAIMS_MESSAGE = (
     "This donation has no NGO claims yet, so there is nothing to escalate."
@@ -183,17 +188,29 @@ def assess_donation_escalation(
         "message": result.message,
     }
     if result.action == "escalate" and eligible_for_escalation(donation, now=now):
-        client.table("claims").update(
-            {
-                "status": "rejected",
-                "rejection_reason": (
-                    f"Auto-escalated: {result.message} "
-                    f"(escalation checked at {datetime.now(timezone.utc).isoformat()})."
-                ),
-            }
-        ).eq("id", current_claim["id"]).eq("donation_id", donation_id).eq(
-            "status", "pending"
-        ).execute()
+        rejected = (
+            client.table("claims")
+            .update(
+                {
+                    "status": "rejected",
+                    "rejection_reason": (
+                        f"Auto-escalated: {result.message} "
+                        f"(escalation checked at {datetime.now(timezone.utc).isoformat()})."
+                    ),
+                }
+            )
+            .eq("id", current_claim["id"])
+            .eq("donation_id", donation_id)
+            .eq("status", "pending")
+            .execute()
+        )
+        # Only recalculate when a row was actually rejected. The recompute is a
+        # function of the remaining LIVE claims, so it is correct whether or not
+        # another claim on this donation still requires a volunteer, and running
+        # it here keeps the manual endpoint and the scheduler identical without
+        # introducing a scheduler of its own.
+        if getattr(rejected, "data", None):
+            recompute_volunteer_transport_required(client, donation_id)
     return response
 
 

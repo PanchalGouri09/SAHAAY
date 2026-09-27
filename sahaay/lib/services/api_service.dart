@@ -24,9 +24,11 @@ class ApiService {
       : _auth = auth ?? FirebaseAuth.instance,
         _client = client ?? http.Client();
 
-  bool get isConfigured => _baseUrl.isNotEmpty && !_baseUrl.contains('your-fastapi-host');
+  bool get isConfigured =>
+      _baseUrl.isNotEmpty && !_baseUrl.contains('your-fastapi-host');
 
-  Future<Map<String, dynamic>> getProfile() => _request('GET', '/api/v1/profile');
+  Future<Map<String, dynamic>> getProfile() =>
+      _request('GET', '/api/v1/profile');
 
   Future<Map<String, dynamic>> createProfile(Map<String, dynamic> payload) =>
       _request('POST', '/api/v1/profile', body: payload);
@@ -34,9 +36,31 @@ class ApiService {
   Future<Map<String, dynamic>> updateProfile(Map<String, dynamic> payload) =>
       _request('PATCH', '/api/v1/profile', body: payload);
 
+  /// Sets the signed-in NGO's pickup-vehicle availability.
+  ///
+  /// Three-state: `true` = has a vehicle, `false` = explicitly none, `null` =
+  /// clear the answer back to "not answered". The body carries no NGO id, so
+  /// the backend resolves the row from the Firebase token.
+  Future<Map<String, dynamic>> setNgoVehicleAvailability(bool? available) =>
+      _request('PATCH', '/api/v1/profile/ngo/vehicle-availability',
+          body: <String, dynamic>{'vehicle_available': available});
+
+  /// Sets or clears the signed-in provider's pickup-vehicle availability.
+  ///
+  /// Tri-state, exactly like the NGO variant: `true` = has a vehicle, `false` =
+  /// explicitly none, `null` = clear back to "not answered". The body carries no
+  /// provider id, so the backend resolves the row from the Firebase token and a
+  /// client cannot address another provider's record.
+  Future<Map<String, dynamic>> setProviderVehicleAvailability(
+          bool? available) =>
+      _request('PATCH', '/api/v1/profile/provider/vehicle-availability',
+          body: <String, dynamic>{'vehicle_available': available});
+
   Future<List<dynamic>> getDonations() async {
     final response = await _request('GET', '/api/v1/donations');
-    return response['data'] is List ? response['data'] as List<dynamic> : <dynamic>[];
+    return response['data'] is List
+        ? response['data'] as List<dynamic>
+        : <dynamic>[];
   }
 
   Future<Map<String, dynamic>> createDonation(Map<String, dynamic> payload) =>
@@ -70,7 +94,8 @@ class ApiService {
       throw ApiException(response.statusCode,
           detail?.toString() ?? 'Food photo upload failed.');
     }
-    final url = decoded is Map<String, dynamic> ? decoded['food_image_url'] : null;
+    final url =
+        decoded is Map<String, dynamic> ? decoded['food_image_url'] : null;
     if (url is! String || url.isEmpty) {
       throw ApiException(
           response.statusCode, 'Backend did not return an image URL.');
@@ -111,9 +136,8 @@ class ApiService {
     required File file,
   }) async {
     final mime = mimeForPath(file.path);
-    final filename = file.uri.pathSegments.isNotEmpty
-        ? file.uri.pathSegments.last
-        : 'photo';
+    final filename =
+        file.uri.pathSegments.isNotEmpty ? file.uri.pathSegments.last : 'photo';
     return http.MultipartRequest(
       'POST',
       Uri.parse('$baseUrl/api/v1/donations/upload'),
@@ -159,7 +183,9 @@ class ApiService {
 
   Future<List<dynamic>> getClaims() async {
     final response = await _request('GET', '/api/v1/claims');
-    return response['data'] is List ? response['data'] as List<dynamic> : <dynamic>[];
+    return response['data'] is List
+        ? response['data'] as List<dynamic>
+        : <dynamic>[];
   }
 
   Future<Map<String, dynamic>> createClaim(Map<String, dynamic> payload) =>
@@ -167,8 +193,31 @@ class ApiService {
 
   Future<List<dynamic>> getDeliveries() async {
     final response = await _request('GET', '/api/v1/deliveries');
-    return response['data'] is List ? response['data'] as List<dynamic> : <dynamic>[];
+    return response['data'] is List
+        ? response['data'] as List<dynamic>
+        : <dynamic>[];
   }
+
+  /// Open volunteer transport tasks that no volunteer has accepted yet.
+  ///
+  /// These are real donations where the provider and the claiming NGO both
+  /// reported no vehicle, so the pickup needs a volunteer. Nothing is assigned
+  /// by this call.
+  Future<List<dynamic>> getVolunteerTransportTasks() async {
+    final response =
+        await _request('GET', '/api/v1/deliveries/transport-required');
+    return response['data'] is List
+        ? response['data'] as List<dynamic>
+        : <dynamic>[];
+  }
+
+  /// Accepts an open transport task as the signed-in volunteer.
+  ///
+  /// The volunteer identity comes from the Firebase token, not the request,
+  /// so this cannot be used to take work on somebody else's behalf.
+  Future<Map<String, dynamic>> acceptVolunteerTransportTask(
+          String deliveryId) =>
+      _request('POST', '/api/v1/deliveries/$deliveryId/accept');
 
   Future<Map<String, dynamic>> updateDeliveryStatus(
     String deliveryId,
@@ -178,7 +227,9 @@ class ApiService {
 
   Future<List<dynamic>> getNotifications() async {
     final response = await _request('GET', '/api/v1/notifications');
-    return response['data'] is List ? response['data'] as List<dynamic> : <dynamic>[];
+    return response['data'] is List
+        ? response['data'] as List<dynamic>
+        : <dynamic>[];
   }
 
   Future<Map<String, dynamic>> markNotificationRead(String notificationId) =>
@@ -367,8 +418,11 @@ class ApiService {
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final detail = decoded is Map<String, dynamic> ? decoded['detail'] : null;
-      throw ApiException(response.statusCode, detail?.toString() ?? 'Backend request failed.');
+      throw ApiException(
+          response.statusCode, detail?.toString() ?? 'Backend request failed.');
     }
-    return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{'data': decoded};
+    return decoded is Map<String, dynamic>
+        ? decoded
+        : <String, dynamic>{'data': decoded};
   }
 }

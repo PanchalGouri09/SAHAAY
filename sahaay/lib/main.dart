@@ -28,6 +28,7 @@ import 'dart:math';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -35,6 +36,7 @@ import 'package:path_provider/path_provider.dart';
 import 'firebase_options.dart';
 import 'services/api_service.dart';
 import 'services/firebase_auth_service.dart';
+import 'services/permission_service.dart';
 import 'services/supabase_service.dart';
 
 Future<void> main() async {
@@ -220,7 +222,8 @@ DeliveryStatus _deliveryStatusFromBackend(String? s) {
     case 'delivered':
       return DeliveryStatus.delivered;
     default:
-      return DeliveryStatus.accepted; // assigned / accepted / failed / cancelled
+      return DeliveryStatus
+          .accepted; // assigned / accepted / failed / cancelled
   }
 }
 
@@ -305,7 +308,8 @@ class Donation {
 
   /// Safe display fallback used in notifications and cards whenever the
   /// backend row has no joined provider name.
-  String get providerLabel => providerName.isEmpty ? 'a nearby provider' : providerName;
+  String get providerLabel =>
+      providerName.isEmpty ? 'a nearby provider' : providerName;
 
   String get freshnessLabel => freshness.isEmpty ? '—' : freshness;
 }
@@ -349,6 +353,87 @@ class DeliveryOpportunity {
       status: _deliveryStatusFromBackend(json['status']?.toString()),
     );
   }
+}
+
+/// An open delivery that no volunteer has accepted yet, published by the backend
+/// because the provider and the claiming NGO BOTH reported no vehicle.
+///
+/// Every field comes from a real database row joined by
+/// `GET /deliveries/transport-required`. Nothing is fabricated, and a missing
+/// value is shown as unknown rather than filled in with a placeholder.
+class VolunteerTransportTask {
+  final String id;
+  final String pickupAddress;
+  final String deliveryAddress;
+
+  final String? foodName;
+  final String? providerName;
+  final String? ngoName;
+  final double? quantityKg;
+  final String? unit;
+  final int? servings;
+  final String? vegType;
+  final DateTime? pickupDeadline;
+  final String? notes;
+
+  const VolunteerTransportTask({
+    required this.id,
+    required this.pickupAddress,
+    required this.deliveryAddress,
+    this.foodName,
+    this.providerName,
+    this.ngoName,
+    this.quantityKg,
+    this.unit,
+    this.servings,
+    this.vegType,
+    this.pickupDeadline,
+    this.notes,
+  });
+
+  factory VolunteerTransportTask.fromBackend(Map<String, dynamic> json) {
+    final donation = json['donation'];
+    final provider = json['provider'];
+    final ngo = json['ngo'];
+    final donationMap = donation is Map ? donation : const {};
+    final providerMap = provider is Map ? provider : const {};
+    final ngoMap = ngo is Map ? ngo : const {};
+    final quantity = donationMap['quantity'];
+    final servings = donationMap['servings'];
+    return VolunteerTransportTask(
+      id: json['id']?.toString() ?? '',
+      pickupAddress: json['pickup_address']?.toString() ?? '',
+      deliveryAddress: json['delivery_address']?.toString() ?? '',
+      foodName: donationMap['food_name']?.toString(),
+      providerName: providerMap['organization_name']?.toString(),
+      ngoName: ngoMap['organization_name']?.toString(),
+      quantityKg: quantity is num ? quantity.toDouble() : null,
+      unit: donationMap['unit']?.toString(),
+      servings: servings is num ? servings.toInt() : null,
+      vegType: donationMap['veg_type']?.toString(),
+      pickupDeadline: DateTime.tryParse(json['pickup_time']?.toString() ??
+          donationMap['pickup_deadline']?.toString() ??
+          ''),
+      notes: json['notes']?.toString(),
+    );
+  }
+
+  /// "10 kg" or "40 servings", whichever the donation actually recorded. Null
+  /// when the backend has no quantity, rather than a fabricated number.
+  String? get quantityLabel {
+    if (quantityKg != null) {
+      final amount = quantityKg == quantityKg!.roundToDouble()
+          ? quantityKg!.toStringAsFixed(0)
+          : quantityKg!.toStringAsFixed(1);
+      return '$amount ${unit ?? 'kg'}';
+    }
+    if (servings != null) return '$servings servings';
+    return null;
+  }
+
+  /// True when both sides confirmed they cannot transport, which is the only
+  /// condition under which the backend publishes this task.
+  bool get volunteerRequired => true;
 }
 
 enum NotificationCategory { donation, matching, volunteer, reward, system }
@@ -457,11 +542,13 @@ class DailyFoodEntry {
   /// The backend's explanation when a prediction is not available.
   String? get predictionReason => prediction?['reason']?.toString();
 
-  double? get predictedSurplusKg =>
-      hasPrediction ? _asDoubleOrNull(prediction?['predicted_surplus_kg']) : null;
+  double? get predictedSurplusKg => hasPrediction
+      ? _asDoubleOrNull(prediction?['predicted_surplus_kg'])
+      : null;
 
-  double? get recommendedPrepareKg =>
-      hasPrediction ? _asDoubleOrNull(prediction?['recommended_prepare_kg']) : null;
+  double? get recommendedPrepareKg => hasPrediction
+      ? _asDoubleOrNull(prediction?['recommended_prepare_kg'])
+      : null;
 
   String? get preparationRecommendation =>
       prediction?['preparation_recommendation']?.toString();
@@ -1076,7 +1163,10 @@ class SecondaryButton extends StatelessWidget {
               width: 22,
               child: CircularProgressIndicator(strokeWidth: 2.4))
           : Row(mainAxisSize: MainAxisSize.min, children: [
-              if (icon != null) ...[Icon(icon, size: 20), const SizedBox(width: 8)],
+              if (icon != null) ...[
+                Icon(icon, size: 20),
+                const SizedBox(width: 8)
+              ],
               Text(label),
             ]),
     );
@@ -1215,8 +1305,8 @@ class DonationCard extends StatelessWidget {
                     _miniInfo(context, Icons.near_me_outlined,
                         '${donation.distanceKm.toStringAsFixed(1)} km away'),
                   if (donation.expiryLabel.isNotEmpty)
-                    _miniInfo(context, Icons.schedule_outlined,
-                        donation.expiryLabel),
+                    _miniInfo(
+                        context, Icons.schedule_outlined, donation.expiryLabel),
                   _miniInfo(context, Icons.eco_outlined,
                       'Freshness: ${donation.freshnessLabel}'),
                 ],
@@ -1629,7 +1719,9 @@ class SurplusPredictionCard extends StatelessWidget {
               if (entry?.hasPrediction == true && entry?.modelVersion != null)
                 Text(entry!.modelVersion!,
                     style: TextStyle(
-                        fontSize: 10, color: c.textSecondary, letterSpacing: 0.3)),
+                        fontSize: 10,
+                        color: c.textSecondary,
+                        letterSpacing: 0.3)),
             ]),
             const SizedBox(height: 12),
             ..._body(context, c),
@@ -1773,7 +1865,8 @@ class SurplusPredictionCard extends StatelessWidget {
   }
 
   /// Formats a backend-supplied kg value, never substituting a default number.
-  static String _kg(double? value) => value == null ? '—' : value.toStringAsFixed(1);
+  static String _kg(double? value) =>
+      value == null ? '—' : value.toStringAsFixed(1);
 }
 
 /// AI result card — NGO/donation weighted match score (FR-13). Renders a
@@ -2177,8 +2270,7 @@ class _LoginScreenState extends State<LoginScreen> {
       // Firebase session exists but no SAHAAY profile -> first-time enrollment.
       setState(() => _googleLoading = false);
       await Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) =>
-              const RoleSelectionScreen(googleEnrollment: true)));
+          builder: (_) => const RoleSelectionScreen(googleEnrollment: true)));
       if (!mounted) return;
       final refreshed = context.read<AppState>();
       if (!refreshed.isLoggedIn && refreshed.hasFirebaseUser) {
@@ -2335,9 +2427,10 @@ class RoleSelectionScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(googleEnrollment
-                ? 'Finish setting up your account'
-                : 'What would you like to do?',
+            Text(
+                googleEnrollment
+                    ? 'Finish setting up your account'
+                    : 'What would you like to do?',
                 style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: AppSpacing.sm),
             if (googleEnrollment) ...[
@@ -2356,18 +2449,17 @@ class RoleSelectionScreen extends StatelessWidget {
               subtitle:
                   'Restaurant, hotel, college canteen or caterer donating surplus food.',
               onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) =>
-                      RegisterProviderScreen(googleEnrollment: googleEnrollment))),
+                  builder: (_) => RegisterProviderScreen(
+                      googleEnrollment: googleEnrollment))),
             ),
             const SizedBox(height: AppSpacing.md),
             RoleCard(
               icon: Icons.apartment_outlined,
               title: 'NGO',
               subtitle: 'Discover and claim surplus food for your community.',
-              onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                      builder: (_) =>
-                          RegisterNgoScreen(googleEnrollment: googleEnrollment))),
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) =>
+                      RegisterNgoScreen(googleEnrollment: googleEnrollment))),
             ),
             const SizedBox(height: AppSpacing.md),
             RoleCard(
@@ -2376,8 +2468,8 @@ class RoleSelectionScreen extends StatelessWidget {
               subtitle:
                   'Optionally help deliver food from providers to NGOs nearby.',
               onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) =>
-                      RegisterVolunteerScreen(googleEnrollment: googleEnrollment))),
+                  builder: (_) => RegisterVolunteerScreen(
+                      googleEnrollment: googleEnrollment))),
             ),
           ],
         ),
@@ -2412,8 +2504,7 @@ class _RegisterProviderScreenState extends State<RegisterProviderScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    if (!widget.googleEnrollment &&
-        _password.text != _confirmPassword.text) {
+    if (!widget.googleEnrollment && _password.text != _confirmPassword.text) {
       _showSnack('Passwords do not match.', isError: true);
       return;
     }
@@ -2421,48 +2512,48 @@ class _RegisterProviderScreenState extends State<RegisterProviderScreen> {
     try {
       if (widget.googleEnrollment) {
         await context.read<AppState>().enroll(
-              role: UserRole.provider,
-              fullName: _contactPerson.text.trim(),
-              orgLabel: _orgName.text.trim(),
-              phone: _phone.text.trim(),
-              roleProfile: {
-                'organization_name': _orgName.text.trim(),
-                'organization_type': switch (_type) {
-                  ProviderType.restaurant => 'restaurant',
-                  ProviderType.hotel => 'hotel',
-                  ProviderType.collegeCanteen => 'canteen',
-                  ProviderType.caterer => 'event_organizer',
-                  ProviderType.bakery => 'other',
-                  ProviderType.other => 'other',
-                },
-                'address': _address.text.trim(),
-                'city': _city.text.trim(),
-                'phone': _phone.text.trim(),
-              },
-            );
+          role: UserRole.provider,
+          fullName: _contactPerson.text.trim(),
+          orgLabel: _orgName.text.trim(),
+          phone: _phone.text.trim(),
+          roleProfile: {
+            'organization_name': _orgName.text.trim(),
+            'organization_type': switch (_type) {
+              ProviderType.restaurant => 'restaurant',
+              ProviderType.hotel => 'hotel',
+              ProviderType.collegeCanteen => 'canteen',
+              ProviderType.caterer => 'event_organizer',
+              ProviderType.bakery => 'other',
+              ProviderType.other => 'other',
+            },
+            'address': _address.text.trim(),
+            'city': _city.text.trim(),
+            'phone': _phone.text.trim(),
+          },
+        );
       } else {
         await context.read<AppState>().register(
-              role: UserRole.provider,
-              email: _email.text,
-              password: _password.text,
-              fullName: _contactPerson.text.trim(),
-              orgLabel: _orgName.text.trim(),
-              phone: _phone.text.trim(),
-              roleProfile: {
-                'organization_name': _orgName.text.trim(),
-                'organization_type': switch (_type) {
-                  ProviderType.restaurant => 'restaurant',
-                  ProviderType.hotel => 'hotel',
-                  ProviderType.collegeCanteen => 'canteen',
-                  ProviderType.caterer => 'event_organizer',
-                  ProviderType.bakery => 'other',
-                  ProviderType.other => 'other',
-                },
-                'address': _address.text.trim(),
-                'city': _city.text.trim(),
-                'phone': _phone.text.trim(),
-              },
-            );
+          role: UserRole.provider,
+          email: _email.text,
+          password: _password.text,
+          fullName: _contactPerson.text.trim(),
+          orgLabel: _orgName.text.trim(),
+          phone: _phone.text.trim(),
+          roleProfile: {
+            'organization_name': _orgName.text.trim(),
+            'organization_type': switch (_type) {
+              ProviderType.restaurant => 'restaurant',
+              ProviderType.hotel => 'hotel',
+              ProviderType.collegeCanteen => 'canteen',
+              ProviderType.caterer => 'event_organizer',
+              ProviderType.bakery => 'other',
+              ProviderType.other => 'other',
+            },
+            'address': _address.text.trim(),
+            'city': _city.text.trim(),
+            'phone': _phone.text.trim(),
+          },
+        );
       }
     } on AuthException catch (error) {
       if (mounted) {
@@ -2473,7 +2564,8 @@ class _RegisterProviderScreenState extends State<RegisterProviderScreen> {
     } catch (_) {
       if (mounted) {
         setState(() => _isLoading = false);
-        _showSnack('Could not reach SAHAAY. Check your connection and try again.',
+        _showSnack(
+            'Could not reach SAHAAY. Check your connection and try again.',
             isError: true);
       }
       return;
@@ -2525,12 +2617,13 @@ class _RegisterProviderScreenState extends State<RegisterProviderScreen> {
                     prefixIcon: Icons.person_outline,
                     validator: _req),
                 const SizedBox(height: AppSpacing.md),
-                if (!widget.googleEnrollment) AppInputField(
-                    label: 'Email',
-                    controller: _email,
-                    keyboardType: TextInputType.emailAddress,
-                    prefixIcon: Icons.email_outlined,
-                    validator: _emailValidator),
+                if (!widget.googleEnrollment)
+                  AppInputField(
+                      label: 'Email',
+                      controller: _email,
+                      keyboardType: TextInputType.emailAddress,
+                      prefixIcon: Icons.email_outlined,
+                      validator: _emailValidator),
                 if (widget.googleEnrollment) ...[
                   Text(
                     'Signed in with Google — your Gmail will be used as your account email.',
@@ -2563,19 +2656,21 @@ class _RegisterProviderScreenState extends State<RegisterProviderScreen> {
                     helperText:
                         'Location pin drop available once Maps is connected.'),
                 const SizedBox(height: AppSpacing.md),
-                if (!widget.googleEnrollment) AppInputField(
-                    label: 'Password',
-                    controller: _password,
-                    obscureText: true,
-                    prefixIcon: Icons.lock_outline,
-                    validator: _passwordValidator),
+                if (!widget.googleEnrollment)
+                  AppInputField(
+                      label: 'Password',
+                      controller: _password,
+                      obscureText: true,
+                      prefixIcon: Icons.lock_outline,
+                      validator: _passwordValidator),
                 const SizedBox(height: AppSpacing.md),
-                if (!widget.googleEnrollment) AppInputField(
-                    label: 'Confirm Password',
-                    controller: _confirmPassword,
-                    obscureText: true,
-                    prefixIcon: Icons.lock_outline,
-                    validator: _req),
+                if (!widget.googleEnrollment)
+                  AppInputField(
+                      label: 'Confirm Password',
+                      controller: _confirmPassword,
+                      obscureText: true,
+                      prefixIcon: Icons.lock_outline,
+                      validator: _req),
                 const SizedBox(height: AppSpacing.lg),
                 PrimaryButton(
                     label: 'CREATE PROVIDER ACCOUNT',
@@ -2629,8 +2724,7 @@ class _RegisterNgoScreenState extends State<RegisterNgoScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    if (!widget.googleEnrollment &&
-        _password.text != _confirmPassword.text) {
+    if (!widget.googleEnrollment && _password.text != _confirmPassword.text) {
       _showSnack('Passwords do not match.', isError: true);
       return;
     }
@@ -2642,38 +2736,38 @@ class _RegisterNgoScreenState extends State<RegisterNgoScreen> {
     try {
       if (widget.googleEnrollment) {
         await context.read<AppState>().enroll(
-              role: UserRole.ngo,
-              fullName: _contactPerson.text.trim(),
-              orgLabel: _ngoName.text.trim(),
-              phone: _phone.text.trim(),
-              roleProfile: {
-                'organization_name': _ngoName.text.trim(),
-                'registration_number': _regId.text.trim(),
-                'address': _address.text.trim(),
-                'city': _city.text.trim(),
-                'phone': _phone.text.trim(),
-                'food_capacity': int.tryParse(_capacity.text.trim()),
-                'preferred_food_types': _categories.toList(),
-              },
-            );
+          role: UserRole.ngo,
+          fullName: _contactPerson.text.trim(),
+          orgLabel: _ngoName.text.trim(),
+          phone: _phone.text.trim(),
+          roleProfile: {
+            'organization_name': _ngoName.text.trim(),
+            'registration_number': _regId.text.trim(),
+            'address': _address.text.trim(),
+            'city': _city.text.trim(),
+            'phone': _phone.text.trim(),
+            'food_capacity': int.tryParse(_capacity.text.trim()),
+            'preferred_food_types': _categories.toList(),
+          },
+        );
       } else {
         await context.read<AppState>().register(
-              role: UserRole.ngo,
-              email: _email.text,
-              password: _password.text,
-              fullName: _contactPerson.text.trim(),
-              orgLabel: _ngoName.text.trim(),
-              phone: _phone.text.trim(),
-              roleProfile: {
-                'organization_name': _ngoName.text.trim(),
-                'registration_number': _regId.text.trim(),
-                'address': _address.text.trim(),
-                'city': _city.text.trim(),
-                'phone': _phone.text.trim(),
-                'food_capacity': int.tryParse(_capacity.text.trim()),
-                'preferred_food_types': _categories.toList(),
-              },
-            );
+          role: UserRole.ngo,
+          email: _email.text,
+          password: _password.text,
+          fullName: _contactPerson.text.trim(),
+          orgLabel: _ngoName.text.trim(),
+          phone: _phone.text.trim(),
+          roleProfile: {
+            'organization_name': _ngoName.text.trim(),
+            'registration_number': _regId.text.trim(),
+            'address': _address.text.trim(),
+            'city': _city.text.trim(),
+            'phone': _phone.text.trim(),
+            'food_capacity': int.tryParse(_capacity.text.trim()),
+            'preferred_food_types': _categories.toList(),
+          },
+        );
       }
     } on AuthException catch (error) {
       if (mounted) {
@@ -2725,12 +2819,13 @@ class _RegisterNgoScreenState extends State<RegisterNgoScreen> {
                     prefixIcon: Icons.person_outline,
                     validator: _req),
                 const SizedBox(height: AppSpacing.md),
-                if (!widget.googleEnrollment) AppInputField(
-                    label: 'Email',
-                    controller: _email,
-                    keyboardType: TextInputType.emailAddress,
-                    prefixIcon: Icons.email_outlined,
-                    validator: _emailValidator),
+                if (!widget.googleEnrollment)
+                  AppInputField(
+                      label: 'Email',
+                      controller: _email,
+                      keyboardType: TextInputType.emailAddress,
+                      prefixIcon: Icons.email_outlined,
+                      validator: _emailValidator),
                 if (widget.googleEnrollment) ...[
                   Text(
                     'Signed in with Google — your Gmail will be used as your account email.',
@@ -2787,19 +2882,21 @@ class _RegisterNgoScreenState extends State<RegisterNgoScreen> {
                   }).toList(),
                 ),
                 const SizedBox(height: AppSpacing.md),
-                if (!widget.googleEnrollment) AppInputField(
-                    label: 'Password',
-                    controller: _password,
-                    obscureText: true,
-                    prefixIcon: Icons.lock_outline,
-                    validator: _passwordValidator),
+                if (!widget.googleEnrollment)
+                  AppInputField(
+                      label: 'Password',
+                      controller: _password,
+                      obscureText: true,
+                      prefixIcon: Icons.lock_outline,
+                      validator: _passwordValidator),
                 const SizedBox(height: AppSpacing.md),
-                if (!widget.googleEnrollment) AppInputField(
-                    label: 'Confirm Password',
-                    controller: _confirmPassword,
-                    obscureText: true,
-                    prefixIcon: Icons.lock_outline,
-                    validator: _req),
+                if (!widget.googleEnrollment)
+                  AppInputField(
+                      label: 'Confirm Password',
+                      controller: _confirmPassword,
+                      obscureText: true,
+                      prefixIcon: Icons.lock_outline,
+                      validator: _req),
                 const SizedBox(height: AppSpacing.lg),
                 PrimaryButton(
                     label: 'CREATE NGO ACCOUNT',
@@ -2842,8 +2939,7 @@ class _RegisterVolunteerScreenState extends State<RegisterVolunteerScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    if (!widget.googleEnrollment &&
-        _password.text != _confirmPassword.text) {
+    if (!widget.googleEnrollment && _password.text != _confirmPassword.text) {
       _showSnack('Passwords do not match.', isError: true);
       return;
     }
@@ -2851,28 +2947,26 @@ class _RegisterVolunteerScreenState extends State<RegisterVolunteerScreen> {
     try {
       if (widget.googleEnrollment) {
         await context.read<AppState>().enroll(
-              role: UserRole.volunteer,
-              fullName: _fullName.text.trim(),
-              orgLabel: _fullName.text.trim(),
-              phone: _phone.text.trim(),
-              roleProfile: {
-                'availability_status':
-                    _days.isEmpty ? 'offline' : 'available',
-              },
-            );
+          role: UserRole.volunteer,
+          fullName: _fullName.text.trim(),
+          orgLabel: _fullName.text.trim(),
+          phone: _phone.text.trim(),
+          roleProfile: {
+            'availability_status': _days.isEmpty ? 'offline' : 'available',
+          },
+        );
       } else {
         await context.read<AppState>().register(
-              role: UserRole.volunteer,
-              email: _email.text,
-              password: _password.text,
-              fullName: _fullName.text.trim(),
-              orgLabel: _fullName.text.trim(),
-              phone: _phone.text.trim(),
-              roleProfile: {
-                'availability_status':
-                    _days.isEmpty ? 'offline' : 'available',
-              },
-            );
+          role: UserRole.volunteer,
+          email: _email.text,
+          password: _password.text,
+          fullName: _fullName.text.trim(),
+          orgLabel: _fullName.text.trim(),
+          phone: _phone.text.trim(),
+          roleProfile: {
+            'availability_status': _days.isEmpty ? 'offline' : 'available',
+          },
+        );
       }
     } on AuthException catch (error) {
       if (mounted) {
@@ -2912,12 +3006,13 @@ class _RegisterVolunteerScreenState extends State<RegisterVolunteerScreen> {
                     prefixIcon: Icons.person_outline,
                     validator: _req),
                 const SizedBox(height: AppSpacing.md),
-                if (!widget.googleEnrollment) AppInputField(
-                    label: 'Email',
-                    controller: _email,
-                    keyboardType: TextInputType.emailAddress,
-                    prefixIcon: Icons.email_outlined,
-                    validator: _emailValidator),
+                if (!widget.googleEnrollment)
+                  AppInputField(
+                      label: 'Email',
+                      controller: _email,
+                      keyboardType: TextInputType.emailAddress,
+                      prefixIcon: Icons.email_outlined,
+                      validator: _emailValidator),
                 if (widget.googleEnrollment) ...[
                   Text(
                     'Signed in with Google — your Gmail will be used as your account email.',
@@ -2972,19 +3067,21 @@ class _RegisterVolunteerScreenState extends State<RegisterVolunteerScreen> {
                   }).toList(),
                 ),
                 const SizedBox(height: AppSpacing.md),
-                if (!widget.googleEnrollment) AppInputField(
-                    label: 'Password',
-                    controller: _password,
-                    obscureText: true,
-                    prefixIcon: Icons.lock_outline,
-                    validator: _passwordValidator),
+                if (!widget.googleEnrollment)
+                  AppInputField(
+                      label: 'Password',
+                      controller: _password,
+                      obscureText: true,
+                      prefixIcon: Icons.lock_outline,
+                      validator: _passwordValidator),
                 const SizedBox(height: AppSpacing.md),
-                if (!widget.googleEnrollment) AppInputField(
-                    label: 'Confirm Password',
-                    controller: _confirmPassword,
-                    obscureText: true,
-                    prefixIcon: Icons.lock_outline,
-                    validator: _req),
+                if (!widget.googleEnrollment)
+                  AppInputField(
+                      label: 'Confirm Password',
+                      controller: _confirmPassword,
+                      obscureText: true,
+                      prefixIcon: Icons.lock_outline,
+                      validator: _req),
                 const SizedBox(height: AppSpacing.lg),
                 PrimaryButton(
                     label: 'CREATE VOLUNTEER ACCOUNT',
@@ -3160,8 +3257,7 @@ class _DailyFoodEntryScreenState extends State<DailyFoodEntryScreen> {
 
     final payload = <String, dynamic>{
       'food_category': _category,
-      'food_prepared_kg':
-          double.parse(_preparedController.text.trim()),
+      'food_prepared_kg': double.parse(_preparedController.text.trim()),
       'food_sold_kg': double.parse(_soldController.text.trim()),
       if (_mealType != null) 'meal_type': _mealType,
       // No provider_id and no date: the backend owns both.
@@ -3184,7 +3280,8 @@ class _DailyFoodEntryScreenState extends State<DailyFoodEntryScreen> {
         _submitting = false;
         _submitError = e is ApiException
             ? _apiErrorMessage(e,
-                fallback: 'Could not save today\'s food entry. Please try again.')
+                fallback:
+                    'Could not save today\'s food entry. Please try again.')
             : 'Could not save today\'s food entry. Please try again.';
       });
     }
@@ -3222,7 +3319,8 @@ class _DailyFoodEntryScreenState extends State<DailyFoodEntryScreen> {
                       decoration: BoxDecoration(
                         color: c.danger.withValues(alpha: 0.10),
                         borderRadius: BorderRadius.circular(AppRadius.card),
-                        border: Border.all(color: c.danger.withValues(alpha: 0.4)),
+                        border:
+                            Border.all(color: c.danger.withValues(alpha: 0.4)),
                       ),
                       child: Row(children: [
                         Icon(Icons.error_outline, color: c.danger, size: 18),
@@ -3243,15 +3341,16 @@ class _DailyFoodEntryScreenState extends State<DailyFoodEntryScreen> {
                       children: [
                         DropdownButtonFormField<String>(
                           initialValue: _category,
-                          decoration: const InputDecoration(
-                              labelText: 'Food Category'),
+                          decoration:
+                              const InputDecoration(labelText: 'Food Category'),
                           items: _kDailyFoodCategories
                               .map((cat) => DropdownMenuItem(
                                   value: cat, child: Text(cat)))
                               .toList(),
                           onChanged: _submitting
                               ? null
-                              : (v) => setState(() => _category = v ?? _category),
+                              : (v) =>
+                                  setState(() => _category = v ?? _category),
                         ),
                         const SizedBox(height: AppSpacing.md),
                         Row(children: [
@@ -3331,8 +3430,7 @@ class ProviderDailyEntryGate extends StatefulWidget {
   const ProviderDailyEntryGate({super.key, this.loadToday});
 
   @override
-  State<ProviderDailyEntryGate> createState() =>
-      _ProviderDailyEntryGateState();
+  State<ProviderDailyEntryGate> createState() => _ProviderDailyEntryGateState();
 }
 
 class _ProviderDailyEntryGateState extends State<ProviderDailyEntryGate> {
@@ -3504,10 +3602,64 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
   bool _loading = true;
   String? _error;
 
+  /// Tri-state vehicle answer, loaded from the backend. Starts unanswered so
+  /// the prompt is not hidden before the real value is known, and `_vehicleLoaded`
+  /// suppresses the card while the read is in flight so it never flashes.
+  VehicleAvailability _vehicle = VehicleAvailability.unanswered;
+  bool _vehicleLoaded = false;
+  bool _savingVehicle = false;
+
   @override
   void initState() {
     super.initState();
     _loadDonations();
+    _loadVehicle();
+  }
+
+  /// Reads the provider's real stored answer. On failure the state stays
+  /// unanswered so the prompt remains visible rather than disappearing behind a
+  /// failed read.
+  Future<void> _loadVehicle() async {
+    try {
+      final profile = await context.read<AppState>().api.getProfile();
+      if (!mounted) return;
+      setState(() {
+        _vehicle = VehicleAvailability.fromBackend(vehicleFromProfile(profile));
+        _vehicleLoaded = true;
+      });
+    } on ApiException {
+      if (!mounted) return;
+      setState(() {
+        _vehicle = VehicleAvailability.unanswered;
+        _vehicleLoaded = true;
+      });
+    }
+  }
+
+  /// Persists the answer, then updates local state only after the backend
+  /// confirms it, so a rejected write never looks saved.
+  Future<void> _answerVehicle(VehicleAvailability choice) async {
+    if (_savingVehicle) return;
+    setState(() => _savingVehicle = true);
+    try {
+      final result = await context
+          .read<AppState>()
+          .api
+          .setProviderVehicleAvailability(choice.backendValue);
+      if (!mounted) return;
+      setState(() {
+        _vehicle = VehicleAvailability.fromBackend(
+            result['vehicle_available'] ?? choice.backendValue);
+        _savingVehicle = false;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _savingVehicle = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content:
+            Text(_apiErrorMessage(e, fallback: 'Could not save your answer.')),
+      ));
+    }
   }
 
   Future<void> _loadDonations() async {
@@ -3531,7 +3683,8 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = _apiErrorMessage(e, fallback: 'Could not load your donations.');
+        _error =
+            _apiErrorMessage(e, fallback: 'Could not load your donations.');
         _loading = false;
       });
     }
@@ -3544,7 +3697,8 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
     Widget pageAt(int index, Widget child, {bool needsData = false}) {
       if (needsData) {
         if (_loading && _donations.isEmpty) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+              body: Center(child: CircularProgressIndicator()));
         }
         if (_error != null && _donations.isEmpty) {
           return Scaffold(
@@ -3585,6 +3739,9 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
           onCreateDonation: _createDonation,
           dailyEntry: widget.dailyEntry,
           onRefreshPrediction: widget.onDailyEntryChanged,
+          vehicleAvailability: _vehicleLoaded ? _vehicle : null,
+          onVehicleAnswer: _answerVehicle,
+          savingVehicle: _savingVehicle,
         ),
       ),
       pageAt(1, _ProviderDonationsTab(donations: _donations)),
@@ -3593,7 +3750,13 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
         _ProviderImpactTab(donations: _donations),
       ),
       NotificationsScreen(role: UserRole.provider, embedded: true),
-      ProfileTab(role: UserRole.provider, name: state.currentOrgLabel),
+      ProfileTab(
+        role: UserRole.provider,
+        name: state.currentOrgLabel,
+        vehicleAvailability: _vehicleLoaded ? _vehicle : null,
+        onVehicleAnswer: _answerVehicle,
+        savingVehicle: _savingVehicle,
+      ),
     ];
 
     return Scaffold(
@@ -3649,8 +3812,9 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
           SnackBar(
               backgroundColor: AppColors.of(context).danger,
               content: Text(e is ApiException
-                  ? _apiErrorMessage(
-                      e, fallback: 'Could not upload the food photo. Please try again.')
+                  ? _apiErrorMessage(e,
+                      fallback:
+                          'Could not upload the food photo. Please try again.')
                   : 'Could not upload the food photo. Please try again.')),
         );
         return;
@@ -3681,7 +3845,7 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
         state.pushNotification(
           'Surplus Prediction Ready',
           'Predicted surplus for "${donation.foodName}" is '
-          '${surplus == null ? '—' : '${(surplus as num).toStringAsFixed(1)} kg'}.',
+              '${surplus == null ? '—' : '${(surplus as num).toStringAsFixed(1)} kg'}.',
           NotificationCategory.matching,
         );
       }
@@ -3694,8 +3858,8 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
       state.pushNotification(
         'Donation Listed',
         '"${donation.foodName}"'
-        ' (${donation.quantityKg.toStringAsFixed(0)} kg) passed the food '
-        'safety check and is live for nearby NGOs.',
+            ' (${donation.quantityKg.toStringAsFixed(0)} kg) passed the food '
+            'safety check and is live for nearby NGOs.',
         NotificationCategory.donation,
       );
       ScaffoldMessenger.of(context).showSnackBar(
@@ -3710,8 +3874,9 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
         SnackBar(
             backgroundColor: AppColors.of(context).danger,
             content: Text(e is ApiException
-                ? _apiErrorMessage(
-                    e, fallback: 'Could not create your donation. Please try again.')
+                ? _apiErrorMessage(e,
+                    fallback:
+                        'Could not create your donation. Please try again.')
                 : 'Could not create your donation. Please try again.')),
       );
     }
@@ -3775,8 +3940,8 @@ Future<ImageSource?> showFoodPhotoSourceSheet(BuildContext context) {
         children: [
           const SizedBox(height: AppSpacing.md),
           Text('Add a food photo',
-              style: TextStyle(
-                  fontWeight: FontWeight.w700, color: c.textPrimary)),
+              style:
+                  TextStyle(fontWeight: FontWeight.w700, color: c.textPrimary)),
           const SizedBox(height: 4),
           Text('A photo is required to list a donation.',
               style: TextStyle(fontSize: 12, color: c.textSecondary)),
@@ -3802,8 +3967,39 @@ Future<ImageSource?> showFoodPhotoSourceSheet(BuildContext context) {
 /// UI so tests can drive the camera through a fake [ImagePickerPlatform].
 @visibleForTesting
 Future<File?> pickFoodPhoto(ImageSource source) async {
-  final picked = await ImagePicker().pickImage(source: source, imageQuality: 80);
+  final picked =
+      await ImagePicker().pickImage(source: source, imageQuality: 80);
   return picked == null ? null : File(picked.path);
+}
+
+/// Test seam for the permission layer.
+///
+/// The donation sheet is library-private, so it cannot take an injected
+/// [PermissionService] through its constructor. Instead production code reads
+/// this overridable, exactly the way [pickFoodPhoto] is already test-driven.
+/// Tests set it in `setUp` and clear it in `tearDown`; it is null in the app.
+PermissionService? permissionServiceOverride;
+
+/// Returns the override when a test installed one, otherwise the real service.
+PermissionService activePermissionService() =>
+    permissionServiceOverride ?? PermissionService();
+
+/// Test seam for reading the device position, so widget tests never touch real
+/// GPS hardware. Null in the app, which falls through to geolocator.
+Future<({double latitude, double longitude})?> Function()?
+    positionReaderOverride;
+
+/// Reads the device position, honouring [positionReaderOverride] first.
+Future<({double latitude, double longitude})?> readDevicePosition() async {
+  final reader = positionReaderOverride;
+  if (reader != null) return reader();
+  try {
+    final position = await Geolocator.getCurrentPosition();
+    return (latitude: position.latitude, longitude: position.longitude);
+  } catch (_) {
+    // A failed fix must never crash the form or invent coordinates.
+    return null;
+  }
 }
 
 /// The real Create Donation form — validated fields, no canned data.
@@ -3829,6 +4025,8 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
   File? _photo;
   String? _photoError;
 
+  late final PermissionService _permissions = activePermissionService();
+
   @override
   void dispose() {
     _foodNameController.dispose();
@@ -3843,23 +4041,219 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
   Future<void> _pickPhoto() async {
     final source = await showFoodPhotoSourceSheet(context);
     if (source == null || !mounted) return;
+
+    // Camera permission is requested only at the moment the provider actually
+    // chooses "Take Photo", never at startup. Gallery selection does not need
+    // it, so that path stays available whatever the camera answer is.
+    if (source == ImageSource.camera) {
+      final outcome = await _permissions.request(AppPermission.camera);
+      if (!mounted) return;
+      if (outcome != PermissionOutcome.granted) {
+        await _handleCameraRefusal(outcome);
+        return;
+      }
+    }
+
     try {
       final picked = await pickFoodPhoto(source);
       if (picked == null) return;
+      if (!mounted) return;
       setState(() {
         _photo = picked;
         _photoError = null;
       });
-    } catch (e) {
+    } catch (_) {
+      // A camera that is absent, busy or broken must not crash the form.
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            backgroundColor: AppColors.of(context).danger,
-            content: Text(source == ImageSource.camera
-                ? 'Could not open the camera.'
-                : 'Could not open photo library.')),
-      );
+      await _handleCameraUnavailable(source);
     }
+  }
+
+  /// Explains the refusal and always keeps the gallery path available. When the
+  /// permission is blocked, offers a route to OS Settings instead of silently
+  /// failing.
+  Future<void> _handleCameraRefusal(PermissionOutcome outcome) async {
+    final message = PermissionCopy.deniedMessage(AppPermission.camera, outcome);
+    final blocked = _permissions.needsSettings(outcome);
+    final useGallery = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(PermissionCopy.cameraTitle),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          if (blocked)
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Open Settings'),
+            )
+          else
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Choose from Gallery'),
+            ),
+        ],
+      ),
+    );
+    if (useGallery == true && mounted) {
+      await _pickFromGallery();
+    } else if (blocked == true && mounted) {
+      await _permissions.openAppSettings();
+    }
+  }
+
+  /// Camera is permitted but the device could not open it. The gallery is
+  /// offered instead, since the food photo is still required.
+  Future<void> _handleCameraUnavailable(ImageSource source) async {
+    if (source != ImageSource.camera) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: AppColors.of(context).danger,
+        content: const Text('Could not open photo library.'),
+      ));
+      return;
+    }
+    final useGallery = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Camera unavailable'),
+        content: const Text(
+            'Could not open the camera. You can choose a photo from your gallery instead.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Choose from Gallery'),
+          ),
+        ],
+      ),
+    );
+    if (useGallery == true && mounted) {
+      await _pickFromGallery();
+    }
+  }
+
+  Future<void> _pickFromGallery() async {
+    try {
+      final picked = await pickFoodPhoto(ImageSource.gallery);
+      if (picked == null || !mounted) return;
+      setState(() {
+        _photo = picked;
+        _photoError = null;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: AppColors.of(context).danger,
+        content: const Text('Could not open photo library.'),
+      ));
+    }
+  }
+
+  bool _locating = false;
+
+  /// Fills the pickup address from the device location.
+  ///
+  /// Handles every permission state without crashing and without fabricating
+  /// coordinates: when location is unavailable the field is left untouched and
+  /// the provider simply types an address instead.
+  Future<void> _useCurrentLocation() async {
+    if (_locating || !mounted) return;
+    setState(() => _locating = true);
+    try {
+      final outcome = await _permissions.request(AppPermission.location);
+      if (!mounted) return;
+
+      if (outcome == PermissionOutcome.serviceDisabled) {
+        // The permission is fine, the OS toggle is off: offer the real fix
+        // rather than a permission dialog that would do nothing.
+        setState(() => _locating = false);
+        final open = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: Text(PermissionCopy.locationTitle),
+            content: const Text(PermissionCopy.locationServiceOff),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Not now'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('Open Settings'),
+              ),
+            ],
+          ),
+        );
+        if (open == true) await _permissions.openLocationSettings();
+        return;
+      }
+
+      if (outcome != PermissionOutcome.granted) {
+        setState(() => _locating = false);
+        await _explainLocationRefusal(outcome);
+        return;
+      }
+
+      final position = await _readPosition();
+      if (!mounted) return;
+      if (position == null) {
+        setState(() => _locating = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          backgroundColor: AppColors.of(context).danger,
+          content: const Text(
+              'Could not read your location. Enter the pickup address manually.'),
+        ));
+        return;
+      }
+
+      setState(() {
+        _pickupAddressController.text =
+            '${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}';
+        _locating = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _locating = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: AppColors.of(context).danger,
+        content: const Text(
+            'Could not read your location. Enter the pickup address manually.'),
+      ));
+    }
+  }
+
+  /// Seam so tests never touch real GPS hardware.
+  Future<({double latitude, double longitude})?> _readPosition() =>
+      readDevicePosition();
+
+  Future<void> _explainLocationRefusal(PermissionOutcome outcome) async {
+    final blocked = _permissions.needsSettings(outcome);
+    final action = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(PermissionCopy.locationTitle),
+        content: Text(PermissionCopy.locationReason),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(blocked ? 'Not now' : 'Enter manually'),
+          ),
+          if (blocked)
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Open Settings'),
+            ),
+        ],
+      ),
+    );
+    if (action == true) await _permissions.openAppSettings();
   }
 
   String? _validateBothOrNeither(String? v) {
@@ -3974,13 +4368,14 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
                 DropdownButtonFormField<String>(
                   value: _storageCondition,
                   decoration: const InputDecoration(
-                      labelText: 'Storage Condition', hintText: 'How is it stored?'),
+                      labelText: 'Storage Condition',
+                      hintText: 'How is it stored?'),
                   items: _kStorageOptions
-                      .map((o) =>
-                          DropdownMenuItem(value: o.value, child: Text(o.label)))
+                      .map((o) => DropdownMenuItem(
+                          value: o.value, child: Text(o.label)))
                       .toList(),
-                  onChanged: (v) =>
-                      setState(() => _storageCondition = v ?? _storageCondition),
+                  onChanged: (v) => setState(
+                      () => _storageCondition = v ?? _storageCondition),
                 ),
                 const SizedBox(height: AppSpacing.md),
                 AppInputField(
@@ -3989,6 +4384,23 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
                   prefixIcon: Icons.location_on_outlined,
                   validator: (v) =>
                       (v == null || v.trim().isEmpty) ? 'Required' : null,
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                // Location is requested here, at the point a provider actually
+                // needs it, rather than on launch. Declining is fine: the
+                // address can still be typed by hand, so nothing is blocked.
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: _locating ? null : _useCurrentLocation,
+                    icon: _locating
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.my_location, size: 18),
+                    label: const Text('Use my current location'),
+                  ),
                 ),
                 const SizedBox(height: AppSpacing.md),
                 Row(children: [
@@ -4152,11 +4564,21 @@ class _ProviderHomeTab extends StatelessWidget {
   final VoidCallback onCreateDonation;
   final DailyFoodEntry? dailyEntry;
   final Future<void> Function()? onRefreshPrediction;
+
+  /// Null while the real answer is still loading, which suppresses the prompt so
+  /// it never flashes for a provider who has already answered.
+  final VehicleAvailability? vehicleAvailability;
+  final Future<void> Function(VehicleAvailability)? onVehicleAnswer;
+  final bool savingVehicle;
+
   const _ProviderHomeTab(
       {required this.donations,
       required this.onCreateDonation,
       this.dailyEntry,
-      this.onRefreshPrediction});
+      this.onRefreshPrediction,
+      this.vehicleAvailability,
+      this.onVehicleAnswer,
+      this.savingVehicle = false});
 
   @override
   Widget build(BuildContext context) {
@@ -4214,6 +4636,18 @@ class _ProviderHomeTab extends StatelessWidget {
                         value: '0',
                         icon: Icons.workspace_premium_outlined)),
               ]),
+              // Transport capability prompt. A non-blocking card, so it cannot
+              // reappear as a duplicate dialog on rebuild, and it never blocks
+              // creating a donation or logging out. Suppressed until the real
+              // value has loaded so it cannot flash for someone who already
+              // answered.
+              if (vehicleAvailability != null && onVehicleAnswer != null)
+                VehicleAvailabilityCard(
+                  value: vehicleAvailability!,
+                  onAnswer: onVehicleAnswer!,
+                  saving: savingVehicle,
+                  role: VehicleRole.provider,
+                ),
               const SizedBox(height: AppSpacing.lg),
               PrimaryButton(
                   label: '+ CREATE NEW DONATION',
@@ -4311,8 +4745,7 @@ class _DonationAiActionsState extends State<_DonationAiActions> {
         final ranked = result['ranked_ngos'] as List? ?? [];
         await _showRankedNgos(ranked);
       } else {
-        _snack(reason ??
-            'Matching is not possible yet for this donation.');
+        _snack(reason ?? 'Matching is not possible yet for this donation.');
       }
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -4402,8 +4835,7 @@ class _DonationAiActionsState extends State<_DonationAiActions> {
           .generateAcknowledgment(widget.donation.id);
       if (!mounted) return;
       final dir = await getApplicationDocumentsDirectory();
-      final file = File(
-          '${dir.path}/sahaay_ack_${widget.donation.id}.pdf');
+      final file = File('${dir.path}/sahaay_ack_${widget.donation.id}.pdf');
       await file.writeAsBytes(bytes, flush: true);
       if (!mounted) return;
       _snack('Acknowledgment PDF saved to:\n${file.path}');
@@ -4476,12 +4908,26 @@ class _RankedNgoTile extends StatelessWidget {
   final Map<String, dynamic> item;
   const _RankedNgoTile({required this.item});
 
+  /// Pairwise logistics status computed by the backend from BOTH the provider's
+  /// and the NGO's own vehicle answers.
+  ///
+  /// Falls back to [VehicleCompatibility.unknown] when the key is missing, which
+  /// is the honest reading: nothing is claimed about transport.
+  VehicleCompatibility get _compatibility =>
+      VehicleCompatibility.fromBackend(item['vehicle_compatibility']);
+
+  /// True only when the backend confirmed a volunteer is required. Derived from
+  /// the capability rather than re-derived here, so `unknown` can never be
+  /// mistaken for a volunteer requirement.
+  bool get _volunteerRequired => _compatibility.needsVolunteer;
+
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     final distance = item['distance_km'];
     final finalScore = item['final_score'];
     final rank = item['rank'];
+    final compatibility = _compatibility;
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -4502,6 +4948,22 @@ class _RankedNgoTile extends StatelessWidget {
                         : 'Distance unknown',
                     style: TextStyle(fontSize: 12, color: c.textSecondary),
                   ),
+                  const SizedBox(height: 6),
+                  // Logistics capability, not a match-quality claim: this
+                  // says who can move the food, never "best AI match".
+                  LogisticsStatusBadge(
+                      compatibility: compatibility, compact: true),
+                  if (_volunteerRequired) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      compatibility.detail,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: c.textSecondary,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -4509,17 +4971,14 @@ class _RankedNgoTile extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  finalScore is num
-                      ? finalScore.toStringAsFixed(1)
-                      : '—',
+                  finalScore is num ? finalScore.toStringAsFixed(1) : '—',
                   style: TextStyle(
                       fontWeight: FontWeight.w900,
                       fontSize: 19,
                       color: c.bluePrimary),
                 ),
                 Text(rank is int ? 'Rank #${rank + 1}' : 'AI score',
-                    style:
-                        TextStyle(fontSize: 10.5, color: c.textSecondary)),
+                    style: TextStyle(fontSize: 10.5, color: c.textSecondary)),
               ],
             ),
           ],
@@ -4724,6 +5183,468 @@ class _StatLine extends StatelessWidget {
 }
 
 // =============================================================================
+// NGO VEHICLE AVAILABILITY
+// =============================================================================
+
+/// The NGO's answer to "do you currently have a vehicle available for food
+/// pickup?".
+///
+/// [unanswered] is deliberately distinct from [no]: the first means the NGO
+/// has not been asked yet, the second is an authoritative "no vehicle". Keeping
+/// them separate preserves the tri-state the backend stores.
+enum VehicleAvailability {
+  unanswered,
+  yes,
+  no;
+
+  /// Wire value for `ngos.vehicle_available`: null == not answered.
+  bool? get backendValue => switch (this) {
+        VehicleAvailability.unanswered => null,
+        VehicleAvailability.yes => true,
+        VehicleAvailability.no => false,
+      };
+
+  static VehicleAvailability fromBackend(Object? raw) => switch (raw) {
+        true => VehicleAvailability.yes,
+        false => VehicleAvailability.no,
+        _ => VehicleAvailability.unanswered,
+      };
+
+  String get label => switch (this) {
+        VehicleAvailability.unanswered => 'Not answered yet',
+        VehicleAvailability.yes => 'Yes, I have a vehicle',
+        VehicleAvailability.no => "No, I don't",
+      };
+
+  String get shortLabel => switch (this) {
+        VehicleAvailability.unanswered => 'Not set',
+        VehicleAvailability.yes => 'Available',
+        VehicleAvailability.no => 'No vehicle',
+      };
+}
+
+/// Whether a specific donation↔NGO pair can be completed without a volunteer.
+///
+/// Computed by the backend (app/services/vehicle_logistics.py) from the
+/// PROVIDER's and the NGO's own tri-state answers, and surfaced here so the UI
+/// can explain the pairing. This is a logistics capability statement, never a
+/// claim about AI match quality.
+enum VehicleCompatibility {
+  /// The provider has a vehicle and can bridge the gap to the NGO.
+  providerTransport,
+
+  /// The NGO has a vehicle and can collect from the provider.
+  ngoTransport,
+
+  /// Both sides have transport, so either can support the pickup.
+  bothTransport,
+
+  /// Neither side can transport: a volunteer is needed to bridge the pickup.
+  /// The NGO is still eligible and claimable.
+  volunteerRequired,
+
+  /// At least one side has not answered, so capability is unknown. Deliberately
+  /// NOT treated as "no vehicle" and never escalated to volunteerRequired.
+  unknown;
+
+  /// Wire value from the matching response.
+  String get wireValue => switch (this) {
+        VehicleCompatibility.providerTransport => 'provider_transport',
+        VehicleCompatibility.ngoTransport => 'ngo_transport',
+        VehicleCompatibility.bothTransport => 'both_transport',
+        VehicleCompatibility.volunteerRequired => 'volunteer_required',
+        VehicleCompatibility.unknown => 'unknown',
+      };
+
+  /// Parses a `vehicle_compatibility` value from the backend. An absent or
+  /// unrecognised value falls back to [unknown], which is the safe reading:
+  /// capability is simply not known.
+  static VehicleCompatibility fromBackend(Object? raw) => switch (raw) {
+        'provider_transport' => VehicleCompatibility.providerTransport,
+        'ngo_transport' => VehicleCompatibility.ngoTransport,
+        'both_transport' => VehicleCompatibility.bothTransport,
+        'volunteer_required' => VehicleCompatibility.volunteerRequired,
+        _ => VehicleCompatibility.unknown,
+      };
+
+  /// Concise status shown under a matched NGO. Phrased as who can move the
+  /// food, never as a match-quality claim.
+  String get label => switch (this) {
+        VehicleCompatibility.providerTransport => 'Provider can transport',
+        VehicleCompatibility.ngoTransport => 'NGO can transport',
+        VehicleCompatibility.bothTransport => 'Both have transport',
+        VehicleCompatibility.volunteerRequired =>
+          'Volunteer transport required',
+        VehicleCompatibility.unknown => 'Transport availability unknown',
+      };
+
+  String get detail => switch (this) {
+        VehicleCompatibility.providerTransport =>
+          'You have a vehicle, so you can deliver this food to the NGO.',
+        VehicleCompatibility.ngoTransport =>
+          'This NGO has a vehicle and can collect the food from you.',
+        VehicleCompatibility.bothTransport =>
+          'You and this NGO both have transport, so pickup is flexible.',
+        VehicleCompatibility.volunteerRequired =>
+          'Neither you nor this NGO has a vehicle. A volunteer is needed to transport this food.',
+        VehicleCompatibility.unknown =>
+          'Vehicle information is missing on one side, so transport cannot be confirmed yet.',
+      };
+
+  /// True only for a confirmed third-party dependency. `unknown` is NOT a
+  /// volunteer requirement, so it must not return true here.
+  bool get needsVolunteer => this == VehicleCompatibility.volunteerRequired;
+
+  /// True only when at least one side is *known* to have a vehicle.
+  /// `unknown` returns false on purpose: "we have not asked yet" must never be
+  /// read as "transport is arranged".
+  bool get hasUsableVehicle => switch (this) {
+        VehicleCompatibility.providerTransport ||
+        VehicleCompatibility.ngoTransport ||
+        VehicleCompatibility.bothTransport =>
+          true,
+        VehicleCompatibility.unknown ||
+        VehicleCompatibility.volunteerRequired =>
+          false,
+      };
+
+  IconData get icon => switch (this) {
+        VehicleCompatibility.providerTransport => Icons.directions_car_outlined,
+        VehicleCompatibility.ngoTransport => Icons.local_shipping_outlined,
+        VehicleCompatibility.bothTransport => Icons.alt_route_outlined,
+        VehicleCompatibility.volunteerRequired =>
+          Icons.volunteer_activism_outlined,
+        VehicleCompatibility.unknown => Icons.help_outline,
+      };
+}
+
+/// Which side of the logistics pair is being asked about vehicle availability.
+///
+/// Both roles answer the same underlying question, but the wording differs:
+/// a provider transports food TO an NGO, an NGO collects food FROM a provider.
+enum VehicleRole { provider, ngo }
+
+/// Copy for the vehicle prompt, grouped so the wording stays consistent and
+/// assertable in tests.
+class VehicleAvailabilityCopy {
+  const VehicleAvailabilityCopy._();
+
+  static const String title = 'Vehicle Availability';
+
+  static String question(VehicleRole role) => switch (role) {
+        VehicleRole.provider =>
+          'Do you currently have a vehicle available for transporting donated food?',
+        VehicleRole.ngo =>
+          'Do you currently have a vehicle available for food pickup?',
+      };
+
+  static String unansweredBody(VehicleRole role) => switch (role) {
+        VehicleRole.provider =>
+          'Let us know if you can transport food today. Matching uses this to work out whether the pickup can actually happen.',
+        VehicleRole.ngo =>
+          'Let providers know if you can collect food today. Matching uses this to work out whether the pickup can actually happen.',
+      };
+
+  static const String setBody =
+      'Your answer helps work out who can transport each donation.';
+
+  static const String yesLabel = 'Yes, I have a vehicle';
+  static const String noLabel = "No, I don't";
+  static const String clearLabel = 'Clear my answer';
+}
+
+/// Persistent, non-blocking prompt shown on the NGO dashboard until answered.
+///
+/// A card rather than a modal dialog, on purpose:
+///   * the NGO can always open the dashboard and every tab,
+///   * it cannot reappear as a duplicate dialog on rebuild,
+///   * it stays visible until answered, then disappears,
+///   * it never interferes with auth or logout.
+class VehicleAvailabilityCard extends StatelessWidget {
+  final VehicleAvailability value;
+  final Future<void> Function(VehicleAvailability) onAnswer;
+  final bool saving;
+  final VehicleRole role;
+
+  const VehicleAvailabilityCard({
+    super.key,
+    required this.value,
+    required this.onAnswer,
+    this.saving = false,
+    this.role = VehicleRole.ngo,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (value != VehicleAvailability.unanswered) {
+      return const SizedBox.shrink();
+    }
+    final c = AppColors.of(context);
+
+    return Card(
+      margin: const EdgeInsets.fromLTRB(
+          AppSpacing.lg, AppSpacing.md, AppSpacing.lg, 0),
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.lg),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.local_shipping_outlined, color: c.bluePrimary),
+                const SizedBox(width: AppSpacing.sm),
+                Expanded(
+                  child: Text(
+                    VehicleAvailabilityCopy.title,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              VehicleAvailabilityCopy.question(role),
+              style: TextStyle(fontSize: 14, color: c.textPrimary),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              VehicleAvailabilityCopy.unansweredBody(role),
+              style: TextStyle(fontSize: 12, color: c.textSecondary),
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            PrimaryButton(
+              label: VehicleAvailabilityCopy.yesLabel,
+              icon: Icons.check_circle_outline,
+              onPressed:
+                  saving ? null : () => onAnswer(VehicleAvailability.yes),
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            SecondaryButton(
+              label: VehicleAvailabilityCopy.noLabel,
+              icon: Icons.cancel_outlined,
+              onPressed: saving ? null : () => onAnswer(VehicleAvailability.no),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Reads `vehicle_available` out of a `GET /profile` response.
+///
+/// The role join (`providers(*)` / `ngos(*)`) comes back from Supabase as a LIST
+/// of rows, so both the list form and a bare object are accepted. Anything
+/// unexpected reads as null, which correctly means "not answered".
+Object? vehicleFromProfile(Map<String, dynamic> profile) {
+  final section = profile['profile'];
+  if (section is List) {
+    if (section.isEmpty || section.first is! Map) return null;
+    return (section.first as Map)['vehicle_available'];
+  }
+  if (section is Map) return section['vehicle_available'];
+  return null;
+}
+
+/// Settings row that always shows the current answer and lets the user change it
+/// later, including clearing it back to unanswered.
+class VehicleAvailabilityTile extends StatelessWidget {
+  final VehicleAvailability value;
+  final Future<void> Function(VehicleAvailability) onAnswer;
+  final bool saving;
+  final VehicleRole role;
+
+  const VehicleAvailabilityTile({
+    super.key,
+    required this.value,
+    required this.onAnswer,
+    this.saving = false,
+    this.role = VehicleRole.ngo,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final icon = switch (value) {
+      VehicleAvailability.yes => Icons.local_shipping_outlined,
+      VehicleAvailability.no => Icons.no_transfer_outlined,
+      VehicleAvailability.unanswered => Icons.help_outline,
+    };
+
+    return ListTile(
+      leading: Icon(icon, color: c.bluePrimary),
+      title: const Text('Vehicle availability'),
+      subtitle: Text(
+        value == VehicleAvailability.unanswered
+            ? VehicleAvailabilityCopy.question(role)
+            : VehicleAvailabilityCopy.setBody,
+        style: TextStyle(fontSize: 12, color: c.textSecondary),
+      ),
+      trailing: saving
+          ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2))
+          : Text(
+              value.shortLabel,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+      onTap: saving
+          ? null
+          : () => showVehicleAvailabilitySheet(context, value, onAnswer, role),
+    );
+  }
+}
+
+/// Bottom sheet for changing an already-answered value.
+Future<void> showVehicleAvailabilitySheet(
+  BuildContext context,
+  VehicleAvailability current,
+  Future<void> Function(VehicleAvailability) onAnswer, [
+  VehicleRole role = VehicleRole.ngo,
+]) async {
+  final c = AppColors.of(context);
+  final choice = await showModalBottomSheet<VehicleAvailability>(
+    context: context,
+    backgroundColor: c.surface,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (sheetContext) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: AppSpacing.md),
+          Text(
+            VehicleAvailabilityCopy.title,
+            style: TextStyle(fontWeight: FontWeight.w700, color: c.textPrimary),
+          ),
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
+            child: Text(
+              VehicleAvailabilityCopy.question(role),
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: c.textSecondary),
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          _VehicleChoice(
+            label: VehicleAvailabilityCopy.yesLabel,
+            icon: Icons.check_circle_outline,
+            selected: current == VehicleAvailability.yes,
+            onTap: () =>
+                Navigator.of(sheetContext).pop(VehicleAvailability.yes),
+          ),
+          _VehicleChoice(
+            label: VehicleAvailabilityCopy.noLabel,
+            icon: Icons.cancel_outlined,
+            selected: current == VehicleAvailability.no,
+            onTap: () => Navigator.of(sheetContext).pop(VehicleAvailability.no),
+          ),
+          if (current != VehicleAvailability.unanswered)
+            _VehicleChoice(
+              label: VehicleAvailabilityCopy.clearLabel,
+              icon: Icons.help_outline,
+              selected: false,
+              onTap: () => Navigator.of(sheetContext)
+                  .pop(VehicleAvailability.unanswered),
+            ),
+          const SizedBox(height: AppSpacing.md),
+        ],
+      ),
+    ),
+  );
+
+  if (choice != null && choice != current) {
+    await onAnswer(choice);
+  }
+}
+
+class _VehicleChoice extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _VehicleChoice({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    return ListTile(
+      leading: Icon(icon),
+      title: Text(label),
+      trailing: selected ? Icon(Icons.check, color: c.bluePrimary) : null,
+      onTap: onTap,
+    );
+  }
+}
+
+/// Compact logistics line shown under a matched NGO.
+///
+/// Deliberately worded as "who can move the food" and never as a match-quality
+/// claim, because this is a deterministic capability statement rather than
+/// something the AI model produced. A volunteer requirement is visually louder
+/// because it is the one state that needs a third party to act.
+class LogisticsStatusBadge extends StatelessWidget {
+  final VehicleCompatibility compatibility;
+  final bool compact;
+
+  const LogisticsStatusBadge({
+    super.key,
+    required this.compatibility,
+    this.compact = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final needsVolunteer = compatibility.needsVolunteer;
+    final unknown = compatibility == VehicleCompatibility.unknown;
+    final color = needsVolunteer
+        ? c.warning
+        : unknown
+            ? c.textSecondary
+            : c.green;
+
+    return Container(
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? 6 : 8,
+        vertical: compact ? 3 : 5,
+      ),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(compatibility.icon, size: compact ? 12 : 14, color: color),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              compatibility.label,
+              style: TextStyle(
+                fontSize: compact ? 11 : 11.5,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// =============================================================================
 // NGO DASHBOARD
 // =============================================================================
 
@@ -4740,10 +5661,73 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
   bool _loading = true;
   String? _error;
 
+  /// Tri-state vehicle answer. Starts unanswered so the prompt is shown until
+  /// the real value has been loaded, rather than flashing a wrong value.
+  VehicleAvailability _vehicle = VehicleAvailability.unanswered;
+  bool _vehicleLoaded = false;
+  bool _savingVehicle = false;
+
   @override
   void initState() {
     super.initState();
     _loadNearby();
+    _loadVehicle();
+  }
+
+  /// Reads the real stored answer. A failure leaves the state unanswered so the
+  /// prompt stays visible instead of hiding behind a failed read.
+  Future<void> _loadVehicle() async {
+    try {
+      final profile = await context.read<AppState>().api.getProfile();
+      final parsed =
+          VehicleAvailability.fromBackend(_ngoVehicleFromProfile(profile));
+      if (!mounted) return;
+      setState(() {
+        _vehicle = parsed;
+        _vehicleLoaded = true;
+      });
+    } on ApiException {
+      if (!mounted) return;
+      setState(() {
+        _vehicle = VehicleAvailability.unanswered;
+        _vehicleLoaded = true;
+      });
+    }
+  }
+
+  /// Digs `vehicle_available` out of a GET /profile response.
+  ///
+  /// `profile` is the role join (`ngos(*)`), which Supabase returns as a LIST
+  /// of rows, so both the list form and a bare object are accepted. Anything
+  /// unexpected reads as null, which correctly means "not answered" and keeps
+  /// the prompt visible.
+  static Object? _ngoVehicleFromProfile(Map<String, dynamic> profile) =>
+      vehicleFromProfile(profile);
+
+  /// Persists the answer, then updates local state only after the backend has
+  /// confirmed it, so a rejected write never looks saved.
+  Future<void> _answerVehicle(VehicleAvailability choice) async {
+    if (_savingVehicle) return;
+    setState(() => _savingVehicle = true);
+    try {
+      final result = await context
+          .read<AppState>()
+          .api
+          .setNgoVehicleAvailability(choice.backendValue);
+      if (!mounted) return;
+      setState(() {
+        _vehicle = VehicleAvailability.fromBackend(
+            result['vehicle_available'] ?? choice.backendValue);
+        _savingVehicle = false;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _savingVehicle = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content:
+            Text(_apiErrorMessage(e, fallback: 'Could not save your answer.')),
+      ));
+    }
   }
 
   Future<void> _loadNearby() async {
@@ -4767,7 +5751,8 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = _apiErrorMessage(e, fallback: 'Could not load nearby donations.');
+        _error =
+            _apiErrorMessage(e, fallback: 'Could not load nearby donations.');
         _loading = false;
       });
     }
@@ -4787,7 +5772,7 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
     context.read<AppState>().pushNotification(
           'Donation Claimed',
           'You claimed "${d.foodName}"'
-          ' (${d.quantityKg.toStringAsFixed(0)} kg) from ${d.providerLabel}.',
+              ' (${d.quantityKg.toStringAsFixed(0)} kg) from ${d.providerLabel}.',
           NotificationCategory.donation,
         );
   }
@@ -4831,11 +5816,27 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
     }
 
     final pages = [
-      pageAt(0, _NgoHomeTab(nearby: _nearby, claimed: _claimed, onClaim: _claim)),
+      pageAt(
+          0,
+          _NgoHomeTab(
+            nearby: _nearby,
+            claimed: _claimed,
+            onClaim: _claim,
+            vehicle: _vehicle,
+            vehicleLoaded: _vehicleLoaded,
+            savingVehicle: _savingVehicle,
+            onVehicleAnswer: _answerVehicle,
+          )),
       pageAt(1, _NgoFindFoodTab(nearby: _nearby, onClaim: _claim)),
       pageAt(2, _NgoClaimsTab(claimed: _claimed)),
       pageAt(3, _NgoImpactTab(claimed: _claimed)),
-      ProfileTab(role: UserRole.ngo, name: state.currentOrgLabel),
+      ProfileTab(
+        role: UserRole.ngo,
+        name: state.currentOrgLabel,
+        vehicleAvailability: _vehicle,
+        onVehicleAnswer: _answerVehicle,
+        savingVehicle: _savingVehicle,
+      ),
     ];
     return Scaffold(
       body: pages[_tab],
@@ -4873,8 +5874,18 @@ class _NgoHomeTab extends StatelessWidget {
   final List<Donation> nearby;
   final List<Donation> claimed;
   final Future<void> Function(Donation) onClaim;
+  final VehicleAvailability vehicle;
+  final bool vehicleLoaded;
+  final bool savingVehicle;
+  final Future<void> Function(VehicleAvailability) onVehicleAnswer;
   const _NgoHomeTab(
-      {required this.nearby, required this.claimed, required this.onClaim});
+      {required this.nearby,
+      required this.claimed,
+      required this.onClaim,
+      required this.vehicle,
+      required this.vehicleLoaded,
+      required this.savingVehicle,
+      required this.onVehicleAnswer});
 
   @override
   Widget build(BuildContext context) {
@@ -4895,6 +5906,17 @@ class _NgoHomeTab extends StatelessWidget {
             onProfileTap: () {},
           ),
         ),
+        // Persistent until answered. Hidden only while the real value is still
+        // loading, so the prompt never flashes for an NGO that already
+        // answered. It never gates the dashboard: every tab stays reachable.
+        if (vehicleLoaded)
+          SliverToBoxAdapter(
+            child: VehicleAvailabilityCard(
+              value: vehicle,
+              saving: savingVehicle,
+              onAnswer: onVehicleAnswer,
+            ),
+          ),
         SliverPadding(
           padding: const EdgeInsets.all(AppSpacing.lg),
           sliver: SliverList(
@@ -4958,9 +5980,11 @@ class _NgoHomeTab extends StatelessWidget {
                                 onPressed: () async {
                                   if (await _claimDonation(context, d)) {
                                     if (!context.mounted) return;
-                                    Navigator.of(context).push(MaterialPageRoute(
-                                        builder: (_) => ClaimedDonationDashboard(
-                                            donation: d)));
+                                    Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                            builder: (_) =>
+                                                ClaimedDonationDashboard(
+                                                    donation: d)));
                                   }
                                 })),
                       ]),
@@ -4981,8 +6005,7 @@ class _NgoHomeTab extends StatelessWidget {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Confirm Claim'),
-        content: Text(
-            'Claim "${d.foodName}"'
+        content: Text('Claim "${d.foodName}"'
             ' (${d.quantityKg.toStringAsFixed(0)} kg) from ${d.providerLabel}?'),
         actions: [
           TextButton(
@@ -5002,8 +6025,8 @@ class _NgoHomeTab extends StatelessWidget {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
             backgroundColor: AppColors.of(context).danger,
-            content: Text(_apiErrorMessage(
-                e, fallback: 'Could not claim this donation. Please try again.'))),
+            content: Text(_apiErrorMessage(e,
+                fallback: 'Could not claim this donation. Please try again.'))),
       );
       return false;
     }
@@ -5320,7 +6343,8 @@ class DonationDetailScreen extends StatelessWidget {
                       SnackBar(
                           backgroundColor: AppColors.of(context).danger,
                           content: Text(_apiErrorMessage(e,
-                              fallback: 'Could not claim this donation. Please try again.'))),
+                              fallback:
+                                  'Could not claim this donation. Please try again.'))),
                     );
                     return;
                   }
@@ -5614,14 +6638,14 @@ class VolunteerDashboardScreen extends StatefulWidget {
 
 class _VolunteerDashboardScreenState extends State<VolunteerDashboardScreen> {
   int _tab = 0;
-  // Available-to-accept opportunities are intentionally left empty: there is
-  // no backend endpoint yet for a volunteer to self-assign a delivery, so we
-  // show an honest empty state instead of inventing one.
-  late final List<DeliveryOpportunity> _opportunities =
-      MockData.deliveryOpportunities();
+  // Real open transport tasks from the backend, not invented data. A task only
+  // exists here when the provider and the claiming NGO both reported no vehicle
+  // and a real volunteer has not accepted it yet.
+  final List<VolunteerTransportTask> _transportTasks = [];
   final List<DeliveryOpportunity> _myDeliveries = [];
   bool _loading = true;
   String? _error;
+  final Set<String> _accepting = {};
 
   @override
   void initState() {
@@ -5634,38 +6658,76 @@ class _VolunteerDashboardScreenState extends State<VolunteerDashboardScreen> {
       _loading = true;
       _error = null;
     });
-    try {
-      final raw = await context.read<AppState>().api.getDeliveries();
-      final list = [
-        for (final item in raw)
-          DeliveryOpportunity.fromBackend(item is Map<String, dynamic> ? item : {}),
-      ];
-      if (!mounted) return;
+    final api = context.read<AppState>().api;
+    // The two lists are independent, so one failing must not hide the other.
+    final mine = await _loadPart(api.getDeliveries);
+    final tasks = await _loadPart(api.getVolunteerTransportTasks);
+    if (!mounted) return;
+    if (mine == null && tasks == null) {
       setState(() {
+        _error = 'Could not load your deliveries. Please try again.';
+        _loading = false;
+      });
+      return;
+    }
+    setState(() {
+      if (mine != null) {
         _myDeliveries
           ..clear()
-          ..addAll(list);
-        _loading = false;
-      });
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = _apiErrorMessage(e, fallback: 'Could not load your deliveries.');
-        _loading = false;
-      });
+          ..addAll([
+            for (final item in mine)
+              DeliveryOpportunity.fromBackend(
+                  item is Map<String, dynamic> ? item : {}),
+          ]);
+      }
+      if (tasks != null) {
+        _transportTasks
+          ..clear()
+          ..addAll([
+            for (final item in tasks)
+              VolunteerTransportTask.fromBackend(
+                  item is Map<String, dynamic> ? item : {}),
+          ]);
+      }
+      _loading = false;
+    });
+  }
+
+  /// Runs one read, returning null when it failed instead of throwing, so a
+  /// single failing endpoint cannot blank the whole dashboard.
+  Future<List<dynamic>?> _loadPart(
+      Future<List<dynamic>> Function() call) async {
+    try {
+      return await call();
+    } on ApiException {
+      return null;
     }
   }
 
-  void _accept(DeliveryOpportunity d) {
-    setState(() {
-      d.status = DeliveryStatus.accepted;
-      _myDeliveries.add(d);
-    });
-    context.read<AppState>().pushNotification(
-          'Delivery Accepted',
-          'You accepted delivery of "${d.foodName}" from ${d.providerName} to ${d.ngoName}.',
-          NotificationCategory.volunteer,
-        );
+  /// A real volunteer accepts the task. The backend takes the volunteer identity
+  /// from the Firebase token, and rejects the call if somebody else already
+  /// accepted it, so this is a genuine hand-off rather than a local fiction.
+  Future<void> _acceptTask(VolunteerTransportTask task) async {
+    if (_accepting.contains(task.id) || task.id.isEmpty) return;
+    setState(() => _accepting.add(task.id));
+    try {
+      await context.read<AppState>().api.acceptVolunteerTransportTask(task.id);
+      if (!mounted) return;
+      setState(() {
+        _transportTasks.removeWhere((t) => t.id == task.id);
+        _accepting.remove(task.id);
+      });
+      if (!mounted) return;
+      // Re-read so the volunteer's own delivery list reflects the new work.
+      await _loadDeliveries();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _accepting.remove(task.id));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            _apiErrorMessage(e, fallback: 'Could not accept this delivery.')),
+      ));
+    }
   }
 
   @override
@@ -5710,9 +6772,11 @@ class _VolunteerDashboardScreenState extends State<VolunteerDashboardScreen> {
       pageAt(
           0,
           _VolunteerHomeTab(
-              opportunities: _opportunities,
+              transportTasks: _transportTasks,
+              accepting: _accepting,
               myDeliveries: _myDeliveries,
-              onAccept: _accept)),
+              onAcceptTask: _acceptTask,
+              onRefresh: _loadDeliveries)),
       pageAt(1, _VolunteerDeliveriesTab(myDeliveries: _myDeliveries)),
       pageAt(2, _VolunteerImpactTab(myDeliveries: _myDeliveries)),
       NotificationsScreen(role: UserRole.volunteer, embedded: true),
@@ -5751,20 +6815,21 @@ class _VolunteerDashboardScreenState extends State<VolunteerDashboardScreen> {
 }
 
 class _VolunteerHomeTab extends StatelessWidget {
-  final List<DeliveryOpportunity> opportunities;
+  final List<VolunteerTransportTask> transportTasks;
+  final Set<String> accepting;
   final List<DeliveryOpportunity> myDeliveries;
-  final void Function(DeliveryOpportunity) onAccept;
+  final Future<void> Function(VolunteerTransportTask) onAcceptTask;
+  final Future<void> Function() onRefresh;
   const _VolunteerHomeTab(
-      {required this.opportunities,
+      {required this.transportTasks,
+      required this.accepting,
       required this.myDeliveries,
-      required this.onAccept});
+      required this.onAcceptTask,
+      required this.onRefresh});
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-    final available = opportunities
-        .where((o) => o.status == DeliveryStatus.available)
-        .toList();
     final completed = myDeliveries
         .where((o) => o.status == DeliveryStatus.delivered)
         .toList();
@@ -5789,9 +6854,9 @@ class _VolunteerHomeTab extends StatelessWidget {
               Row(children: [
                 Expanded(
                     child: StatCard(
-                        label: 'Available Deliveries',
-                        value: '${available.length}',
-                        icon: Icons.local_shipping_outlined,
+                        label: 'Transport Needed',
+                        value: '${transportTasks.length}',
+                        icon: Icons.volunteer_activism_outlined,
                         emphasis: Emphasis.strong)),
                 const SizedBox(width: 10),
                 Expanded(
@@ -5835,22 +6900,30 @@ class _VolunteerHomeTab extends StatelessWidget {
                 );
               }),
               const SizedBox(height: AppSpacing.lg),
-              const SectionHeader(title: 'Delivery Opportunities Near You'),
-              const SizedBox(height: 10),
-              if (available.isEmpty)
+              const SectionHeader(title: 'Volunteer Transport Required'),
+              const SizedBox(height: 4),
+              Builder(builder: (context) {
+                final c = AppColors.of(context);
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Text(
+                    'Neither the provider nor the receiving NGO has a vehicle for these pickups, so a volunteer is needed to transport the food.',
+                    style: TextStyle(fontSize: 12, color: c.textSecondary),
+                  ),
+                );
+              }),
+              if (transportTasks.isEmpty)
                 const EmptyState(
-                    icon: Icons.local_shipping_outlined,
-                    message: 'No delivery opportunities near you right now.')
+                    icon: Icons.volunteer_activism_outlined,
+                    message:
+                        'No donations currently need volunteer transport. Thank you for checking!')
               else
-                ...available.map((o) => Padding(
+                ...transportTasks.map((task) => Padding(
                       padding: const EdgeInsets.only(bottom: 10),
-                      child: _DeliveryCard(
-                        opportunity: o,
-                        onView: () => Navigator.of(context).push(
-                            MaterialPageRoute(
-                                builder: (_) => DeliveryDetailScreen(
-                                    opportunity: o, onAccept: onAccept))),
-                        onAccept: () => onAccept(o),
+                      child: _TransportTaskCard(
+                        task: task,
+                        accepting: accepting.contains(task.id),
+                        onAccept: () => onAcceptTask(task),
                       ),
                     )),
             ]),
@@ -5861,19 +6934,22 @@ class _VolunteerHomeTab extends StatelessWidget {
   }
 }
 
-class _DeliveryCard extends StatelessWidget {
-  final DeliveryOpportunity opportunity;
-  final VoidCallback onView;
+/// One open volunteer transport task, showing only facts the backend actually
+/// has. A missing quantity or address is labelled as unknown rather than filled
+/// in, because inventing pickup details would send a volunteer to the wrong place.
+class _TransportTaskCard extends StatelessWidget {
+  final VolunteerTransportTask task;
+  final bool accepting;
   final VoidCallback onAccept;
-  const _DeliveryCard(
-      {required this.opportunity,
-      required this.onView,
-      required this.onAccept});
+
+  const _TransportTaskCard(
+      {required this.task, required this.accepting, required this.onAccept});
 
   @override
   Widget build(BuildContext context) {
-    final c = AppColors.of(context);
-    final isUrgent = opportunity.deadline.toLowerCase().contains('urgent');
+    final quantity = task.quantityLabel;
+    final deadline = task.pickupDeadline;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(AppSpacing.md),
@@ -5882,71 +6958,82 @@ class _DeliveryCard extends StatelessWidget {
           children: [
             Row(children: [
               Expanded(
-                  child: Text(
-                      '${opportunity.quantityKg.toStringAsFixed(0)} kg ${opportunity.foodName}',
-                      style: Theme.of(context).textTheme.titleMedium)),
-              if (isUrgent) StatusChip(label: 'URGENT', color: c.danger),
+                child: Text(
+                  task.foodName ?? 'Food donation',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              const LogisticsStatusBadge(
+                compatibility: VehicleCompatibility.volunteerRequired,
+                compact: true,
+              ),
             ]),
             const SizedBox(height: 10),
-            Row(children: [
-              Expanded(
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                    Text('PROVIDER',
-                        style: TextStyle(
-                            fontSize: 10,
-                            color: c.textSecondary,
-                            fontWeight: FontWeight.w700)),
-                    Text(opportunity.providerName,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w600, fontSize: 12.5)),
-                  ])),
-              Icon(Icons.arrow_forward, size: 16, color: c.textSecondary),
-              Expanded(
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                    Text('NGO',
-                        style: TextStyle(
-                            fontSize: 10,
-                            color: c.textSecondary,
-                            fontWeight: FontWeight.w700)),
-                    Text(opportunity.ngoName,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w600, fontSize: 12.5),
-                        textAlign: TextAlign.right),
-                  ])),
-            ]),
-            const SizedBox(height: 10),
-            Wrap(spacing: 14, runSpacing: 6, children: [
-              _mini(context, Icons.near_me_outlined,
-                  '${opportunity.distanceKm.toStringAsFixed(1)} km'),
-              _mini(context, Icons.schedule_outlined, opportunity.deadline),
-            ]),
-            const SizedBox(height: 12),
-            Row(children: [
-              Expanded(
-                  child: SecondaryButton(
-                      label: 'VIEW DETAILS', onPressed: onView)),
-              const SizedBox(width: 8),
-              Expanded(
-                  child: PrimaryButton(
-                      label: "I'LL DELIVER", onPressed: onAccept)),
-            ]),
+            _TransportFact(
+              icon: Icons.scale_outlined,
+              label: quantity ?? 'Quantity not recorded',
+            ),
+            const SizedBox(height: 6),
+            _TransportFact(
+              icon: Icons.storefront_outlined,
+              label: task.providerName ?? 'Provider not recorded',
+            ),
+            const SizedBox(height: 6),
+            _TransportFact(
+              icon: Icons.my_location_outlined,
+              label: task.pickupAddress.isEmpty
+                  ? 'Pickup location not recorded'
+                  : 'Pickup: ${task.pickupAddress}',
+            ),
+            const SizedBox(height: 6),
+            _TransportFact(
+              icon: Icons.volunteer_activism_outlined,
+              label: task.ngoName == null
+                  ? 'Destination NGO not recorded'
+                  : 'Deliver to: ${task.ngoName}',
+            ),
+            const SizedBox(height: 6),
+            _TransportFact(
+              icon: Icons.schedule_outlined,
+              label: deadline == null
+                  ? 'Pickup deadline not recorded'
+                  : 'Pickup by ${_timeLabel(deadline)}',
+            ),
+            const SizedBox(height: AppSpacing.md),
+            PrimaryButton(
+              label: accepting ? 'Accepting…' : 'Accept this delivery',
+              icon: Icons.volunteer_activism_outlined,
+              onPressed: accepting ? null : onAccept,
+            ),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _mini(BuildContext context, IconData icon, String text) {
+class _TransportFact extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _TransportFact({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
     final c = AppColors.of(context);
-    return Row(mainAxisSize: MainAxisSize.min, children: [
-      Icon(icon, size: 14, color: c.textSecondary),
-      const SizedBox(width: 4),
-      Text(text, style: TextStyle(fontSize: 12, color: c.textSecondary))
-    ]);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 15, color: c.textSecondary),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 12, color: c.textSecondary),
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -5981,17 +7068,18 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
     setState(() => widget.opportunity.status = next);
     try {
       await context.read<AppState>().api.updateDeliveryStatus(
-            widget.opportunity.id,
-            {'status': _deliveryStatusToBackend(next)},
-          );
+        widget.opportunity.id,
+        {'status': _deliveryStatusToBackend(next)},
+      );
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => widget.opportunity.status = previous);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
             backgroundColor: AppColors.of(context).danger,
-            content: Text(_apiErrorMessage(
-                e, fallback: 'Could not update the delivery status. Please try again.'))),
+            content: Text(_apiErrorMessage(e,
+                fallback:
+                    'Could not update the delivery status. Please try again.'))),
       );
       return;
     }
@@ -6000,7 +7088,7 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
       context.read<AppState>().pushNotification(
             'Delivery Completed',
             'You delivered "${widget.opportunity.foodName}"'
-            ' to ${widget.opportunity.ngoName}. Thank you for helping SAHAAY!',
+                ' to ${widget.opportunity.ngoName}. Thank you for helping SAHAAY!',
             NotificationCategory.reward,
           );
       ScaffoldMessenger.of(context).showSnackBar(
@@ -6324,8 +7412,10 @@ class AdminAnalytics {
 /// Integer-less kg label: "12" / "12.5" / "1.25".
 String _adminKgLabel(double value) {
   if (value == value.roundToDouble()) return value.toStringAsFixed(0);
-  return value.toStringAsFixed(2).replaceFirst(RegExp(r'0+$'), '').replaceFirst(
-      RegExp(r'\.$'), '');
+  return value
+      .toStringAsFixed(2)
+      .replaceFirst(RegExp(r'0+$'), '')
+      .replaceFirst(RegExp(r'\.$'), '');
 }
 
 String _titleCase(String value) {
@@ -6407,10 +7497,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen>
       ]);
       if (!mounted) return;
       setState(() {
-        _summary = AdminSummary.fromBackend(
-            results[0] is Map<String, dynamic>
-                ? results[0] as Map<String, dynamic>
-                : <String, dynamic>{});
+        _summary = AdminSummary.fromBackend(results[0] is Map<String, dynamic>
+            ? results[0] as Map<String, dynamic>
+            : <String, dynamic>{});
         _analytics = AdminAnalytics.fromBackend(
             results[1] is Map<String, dynamic>
                 ? results[1] as Map<String, dynamic>
@@ -6420,8 +7509,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen>
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
-        _error =
-            _apiErrorMessage(e, fallback: 'Could not load the admin dashboard.');
+        _error = _apiErrorMessage(e,
+            fallback: 'Could not load the admin dashboard.');
         _loading = false;
       });
     } catch (_) {
@@ -6537,8 +7626,7 @@ class _AdminOverviewTab extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                  color: c.surfaceAlt,
-                  borderRadius: BorderRadius.circular(12)),
+                  color: c.surfaceAlt, borderRadius: BorderRadius.circular(12)),
               child: Row(children: [
                 Icon(Icons.info_outline, size: 18, color: c.textSecondary),
                 const SizedBox(width: 8),
@@ -6703,8 +7791,7 @@ class _AdminReportsTab extends StatelessWidget {
                   _AdminMetricRow(
                       icon: Icons.volunteer_activism_outlined,
                       label: 'Food Redistributed',
-                      value:
-                          '${_adminKgLabel(a.totalFoodRedistributedKg)} kg',
+                      value: '${_adminKgLabel(a.totalFoodRedistributedKg)} kg',
                       color: c.green),
                   _AdminMetricRow(
                       icon: Icons.check_circle_outline,
@@ -6793,12 +7880,12 @@ class _AdminMetricRow extends StatelessWidget {
           child: Icon(icon, color: color, size: 20),
         ),
         const SizedBox(width: AppSpacing.md),
-        Expanded(
-            child:
-                Text(label, style: TextStyle(color: c.textSecondary))),
+        Expanded(child: Text(label, style: TextStyle(color: c.textSecondary))),
         Text(value,
             style: TextStyle(
-                fontWeight: FontWeight.w800, fontSize: 16, color: c.textPrimary)),
+                fontWeight: FontWeight.w800,
+                fontSize: 16,
+                color: c.textPrimary)),
       ]),
     );
   }
@@ -6835,7 +7922,8 @@ class _AdminListScreenState extends State<AdminListScreen> {
     final api = context.read<AppState>().api;
     switch (widget.resource) {
       case AdminResource.users:
-        return api.getAdminUsers(role: _roleFilter, page: page, pageSize: _pageSize);
+        return api.getAdminUsers(
+            role: _roleFilter, page: page, pageSize: _pageSize);
       case AdminResource.providers:
         return api.getAdminProviders(page: page, pageSize: _pageSize);
       case AdminResource.ngos:
@@ -6882,8 +7970,8 @@ class _AdminListScreenState extends State<AdminListScreen> {
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = _apiErrorMessage(
-            e, fallback: 'Could not load ${widget.resource.label}.');
+        _error = _apiErrorMessage(e,
+            fallback: 'Could not load ${widget.resource.label}.');
         _loading = false;
       });
     } catch (_) {
@@ -6960,8 +8048,7 @@ class _AdminListScreenState extends State<AdminListScreen> {
               ),
             );
           }
-          return _AdminResourceTile(
-              resource: widget.resource, item: _items[i]);
+          return _AdminResourceTile(resource: widget.resource, item: _items[i]);
         },
       ),
     );
@@ -7077,22 +8164,26 @@ class _AdminResourceTile extends StatelessWidget {
         return (_titleCase(role), _adminRoleColor(context, role));
       case AdminResource.providers:
         final verified = item['verified'] == true;
-        return (verified ? 'Verified' : 'Unverified', verified
-            ? AppColors.of(context).green
-            : AppColors.of(context).warning);
+        return (
+          verified ? 'Verified' : 'Unverified',
+          verified ? AppColors.of(context).green : AppColors.of(context).warning
+        );
       case AdminResource.ngos:
         final verified = item['verified'] == true;
-        return (verified ? 'Verified' : 'Unverified', verified
-            ? AppColors.of(context).green
-            : AppColors.of(context).warning);
+        return (
+          verified ? 'Verified' : 'Unverified',
+          verified ? AppColors.of(context).green : AppColors.of(context).warning
+        );
       case AdminResource.volunteers:
         final status = item['availability_status']?.toString() ?? '';
         return (_titleCase(status), _adminStatusColor(context, status));
       case AdminResource.donations:
         final status = item['status']?.toString() ?? '';
         final donationStatus = _donationStatusFromBackend(status);
-        return (donationStatusLabel(donationStatus),
-            donationStatusColor(donationStatus, context));
+        return (
+          donationStatusLabel(donationStatus),
+          donationStatusColor(donationStatus, context)
+        );
       case AdminResource.claims:
       case AdminResource.deliveries:
         final status = item['status']?.toString() ?? '';
@@ -7133,8 +8224,8 @@ class _AdminResourceTile extends StatelessWidget {
                     Text(_subtitleOf(),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            color: c.textSecondary, fontSize: 12.5)),
+                        style:
+                            TextStyle(color: c.textSecondary, fontSize: 12.5)),
                   ],
                 ),
               ),
@@ -7240,8 +8331,11 @@ class NotificationsScreen extends StatefulWidget {
   final UserRole role;
   final bool
       embedded; // true when used as a bottom-nav tab (no back button needed)
+
+  /// Injected in tests so no real platform channel is touched.
+  final PermissionService? permissions;
   const NotificationsScreen(
-      {super.key, required this.role, this.embedded = false});
+      {super.key, required this.role, this.embedded = false, this.permissions});
 
   @override
   State<NotificationsScreen> createState() => _NotificationsScreenState();
@@ -7255,10 +8349,58 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   bool _loading = true;
   bool _failed = false;
 
+  /// Null means "not evaluated yet" (or dismissed), which hides the banner.
+  PermissionOutcome? _notificationOutcome;
+  bool _notificationPromptDismissed = false;
+
+  late final PermissionService _permissions =
+      widget.permissions ?? PermissionService();
+
   @override
   void initState() {
     super.initState();
     _load();
+    _checkNotificationPermission();
+  }
+
+  /// Reads the current permission state WITHOUT prompting. The OS dialog is
+  /// only ever triggered by an explicit "Allow" tap, so the app never nags
+  /// and never prompts on the splash screen.
+  Future<void> _checkNotificationPermission() async {
+    try {
+      final outcome = await _permissions.status(AppPermission.notifications);
+      if (!mounted) return;
+      setState(() {
+        // Granted (or not required on this OS) means nothing to offer.
+        _notificationOutcome = (outcome == PermissionOutcome.granted ||
+                outcome == PermissionOutcome.notRequired)
+            ? null
+            : outcome;
+      });
+    } catch (_) {
+      // Permission status is never a reason to break the screen.
+    }
+  }
+
+  Future<void> _requestNotificationPermission() async {
+    final outcome = await _permissions.request(AppPermission.notifications);
+    if (!mounted) return;
+    setState(() {
+      _notificationOutcome =
+          outcome == PermissionOutcome.granted ? null : outcome;
+      _notificationPromptDismissed = outcome != PermissionOutcome.granted;
+    });
+    if (outcome == PermissionOutcome.permanentlyDenied ||
+        outcome == PermissionOutcome.restricted) {
+      await _permissions.openAppSettings();
+    }
+  }
+
+  void _dismissNotificationPrompt() {
+    setState(() {
+      _notificationPromptDismissed = true;
+      _notificationOutcome = null;
+    });
   }
 
   Future<void> _load() async {
@@ -7276,8 +8418,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               title: item['title']?.toString() ?? '',
               body: item['message']?.toString() ?? '',
               time: _fromIsoTime(item['created_at']),
-              category:
-                  _notificationCategoryFromType(item['type']?.toString()),
+              category: _notificationCategoryFromType(item['type']?.toString()),
               read: item['is_read'] == true,
             ),
       ];
@@ -7341,7 +8482,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             ),
             const SizedBox(height: 10),
             Text(
-              _failed ? 'Could not load notifications.' : 'No notifications yet.',
+              _failed
+                  ? 'Could not load notifications.'
+                  : 'No notifications yet.',
               style: const TextStyle(color: Colors.grey),
               textAlign: TextAlign.center,
             ),
@@ -7368,16 +8511,104 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       );
     }
 
+    // Permission is offered here, inside the notification flow the user
+    // deliberately opened, never on the splash screen. It is a dismissible
+    // banner and the list stays fully usable either way, so declining costs
+    // nothing: in-app notifications continue to work.
+    final showBanner =
+        _notificationOutcome != null && !_notificationPromptDismissed;
+    final withBanner = !showBanner
+        ? body
+        : Column(
+            children: [
+              _NotificationPermissionBanner(
+                outcome: _notificationOutcome!,
+                onAllow: _requestNotificationPermission,
+                onDismiss: _dismissNotificationPrompt,
+              ),
+              Expanded(child: body),
+            ],
+          );
+
     if (widget.embedded) {
       return Scaffold(
           appBar: AppBar(
               title: const Text('Notifications'),
               automaticallyImplyLeading: false,
               actions: const [ThemeToggleButton()]),
-          body: body);
+          body: withBanner);
     }
     return Scaffold(
-        appBar: AppBar(title: const Text('Notifications')), body: body);
+        appBar: AppBar(title: const Text('Notifications')), body: withBanner);
+  }
+}
+
+/// Non-blocking notification permission offer shown inside the notifications
+/// screen. Dismissible and never re-prompts the OS dialog on its own.
+class _NotificationPermissionBanner extends StatelessWidget {
+  final PermissionOutcome outcome;
+  final VoidCallback onAllow;
+  final VoidCallback onDismiss;
+
+  const _NotificationPermissionBanner({
+    required this.outcome,
+    required this.onAllow,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final blocked = outcome == PermissionOutcome.permanentlyDenied ||
+        outcome == PermissionOutcome.restricted;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(
+          AppSpacing.lg, AppSpacing.md, AppSpacing.lg, 0),
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      decoration: BoxDecoration(
+        color: c.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: c.bluePrimary.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.notifications_active_outlined, color: c.bluePrimary),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(PermissionCopy.notificationsTitle,
+                    style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+              IconButton(
+                iconSize: 18,
+                visualDensity: VisualDensity.compact,
+                onPressed: onDismiss,
+                icon: const Icon(Icons.close),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Text(
+            PermissionCopy.deniedMessage(AppPermission.notifications, outcome),
+            style: TextStyle(fontSize: 12, color: c.textSecondary),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          Row(
+            children: [
+              PrimaryButton(
+                label: blocked ? 'Open Settings' : 'Allow',
+                icon: blocked ? Icons.settings_outlined : Icons.check,
+                onPressed: onAllow,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -7388,7 +8619,21 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 class ProfileTab extends StatelessWidget {
   final UserRole role;
   final String name;
-  const ProfileTab({super.key, required this.role, required this.name});
+
+  /// Provider and NGO only. Null for volunteer / admin, which keeps the vehicle
+  /// controls out of those settings entirely.
+  final VehicleAvailability? vehicleAvailability;
+  final Future<void> Function(VehicleAvailability)? onVehicleAnswer;
+  final bool savingVehicle;
+
+  const ProfileTab({
+    super.key,
+    required this.role,
+    required this.name,
+    this.vehicleAvailability,
+    this.onVehicleAnswer,
+    this.savingVehicle = false,
+  });
 
   String get _roleLabel {
     switch (role) {
@@ -7453,7 +8698,12 @@ class ProfileTab extends StatelessWidget {
                   title: const Text('Settings'),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => SettingsScreen(role: role, name: name)))),
+                      builder: (_) => SettingsScreen(
+                          role: role,
+                          name: name,
+                          vehicleAvailability: vehicleAvailability,
+                          onVehicleAnswer: onVehicleAnswer,
+                          savingVehicle: savingVehicle)))),
               const Divider(height: 1),
               ListTile(
                   leading: const Icon(Icons.help_outline),
@@ -7481,7 +8731,17 @@ class ProfileTab extends StatelessWidget {
 class SettingsScreen extends StatefulWidget {
   final UserRole role;
   final String name;
-  const SettingsScreen({super.key, required this.role, required this.name});
+  final VehicleAvailability? vehicleAvailability;
+  final Future<void> Function(VehicleAvailability)? onVehicleAnswer;
+  final bool savingVehicle;
+  const SettingsScreen({
+    super.key,
+    required this.role,
+    required this.name,
+    this.vehicleAvailability,
+    this.onVehicleAnswer,
+    this.savingVehicle = false,
+  });
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -7539,6 +8799,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           'Profile editing will be available once account data is connected.')),
                 ),
               ),
+              // Provider and NGO: the durable place to change the answer later.
+              // Shown for every state, including answered, so the current value
+              // is always visible and editable.
+              if (widget.vehicleAvailability != null &&
+                  widget.onVehicleAnswer != null) ...[
+                const Divider(height: 1),
+                VehicleAvailabilityTile(
+                  value: widget.vehicleAvailability!,
+                  saving: widget.savingVehicle,
+                  onAnswer: widget.onVehicleAnswer!,
+                  role: widget.role == UserRole.provider
+                      ? VehicleRole.provider
+                      : VehicleRole.ngo,
+                ),
+              ],
             ]),
           ),
           const SizedBox(height: AppSpacing.lg),

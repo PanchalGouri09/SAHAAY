@@ -18,6 +18,11 @@ DonationStatus = Literal[
 VegType = Literal["vegetarian", "non_vegetarian", "vegan", "mixed"]
 StorageCondition = Literal["refrigerated", "frozen", "room_temperature", "insulated_container"]
 DeliveryStatus = Literal[
+    # "unassigned" means the task exists and is discoverable but NO volunteer has
+    # accepted it yet (volunteer_id IS NULL). It is published by the backend when
+    # a provider and an NGO both report no vehicle. A client must never set this
+    # status directly: it only ever arrives with a created task.
+    "unassigned",
     "assigned",
     "accepted",
     "picked_up",
@@ -99,6 +104,18 @@ class ClaimCreate(BaseModel):
 
 
 class DeliveryStatusUpdate(BaseModel):
-    status: DeliveryStatus
+    # A client may move a task forward, but must never send "unassigned": that
+    # state is owned by the backend and only exists while volunteer_id IS NULL.
+    # Letting a client set it would produce a row claiming nobody is assigned
+    # while volunteer_id still points at a real volunteer.
+    status: Literal[
+        "assigned",
+        "accepted",
+        "picked_up",
+        "in_transit",
+        "delivered",
+        "failed",
+        "cancelled",
+    ]
     notes: str | None = None
     failure_reason: str | None = None

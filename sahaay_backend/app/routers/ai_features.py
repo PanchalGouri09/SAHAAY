@@ -50,6 +50,13 @@ from app.services.escalation import (
     eligible_for_escalation,
     is_expired,
 )
+from app.services.vehicle_logistics import (
+    compatibility_detail,
+    compatibility_label,
+    order_by_logistics,
+    requires_volunteer_transport,
+    vehicle_compatibility,
+)
 from app.supabase_client import get_supabase_client
 
 router = APIRouter(tags=["ai-features"])
@@ -325,14 +332,26 @@ def _pickup_time_of(donation: dict) -> str | None:
     return parsed.strftime("%H:%M")
 
 
-def _enrich_ranked_ngo(item, candidate_by_id: dict[str, dict]) -> dict:
-    """Merges an AI-ranked NGO with its real ngos row.
+def _enrich_ranked_ngo(
+    item,
+    candidate_by_id: dict[str, dict],
+    provider_vehicle: bool | None,
+) -> dict:
+    """Merges an AI-ranked NGO with its real ngos row and the logistics layer.
 
     AI-estimated fields (distance, per-criterion scores, final_score, rank)
-    stay at the top level exactly as the AI returned them; real factual NGO
-    fields are added under 'ngo' so the two can never be confused."""
+    stay at the top level exactly as the AI returned them and are never
+    modified; real factual NGO fields are added under 'ngo' so the two can
+    never be confused. Vehicle logistics is a deterministic, transparent
+    addition on top of the AI ranking — the AI contract has no vehicle field, so
+    no vehicle information is sent to it and none is attributed to it.
+    """
     row = candidate_by_id.get(item.ngo_id)
     data = item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+    # Tri-state, straight from the real row. None means "not answered yet"
+    # and is passed through as null rather than coerced to false.
+    ngo_vehicle = (row or {}).get("vehicle_available")
+    compatibility = vehicle_compatibility(provider_vehicle, ngo_vehicle)
     data["ngo"] = {
         "id": item.ngo_id,
         "organization_name": (row or {}).get("organization_name"),
@@ -344,7 +363,19 @@ def _enrich_ranked_ngo(item, candidate_by_id: dict[str, dict]) -> dict:
         "preferred_food_types": (row or {}).get("preferred_food_types") or [],
         "available_from": (row or {}).get("available_from"),
         "available_to": (row or {}).get("available_to"),
+        "vehicle_available": ngo_vehicle,
     }
+    # Provider side of the same question, so the UI can explain the pairing
+    # without a second request. Also tri-state: null = provider has not
+    # answered, which is not the same as "no vehicle".
+    data["provider_vehicle_available"] = provider_vehicle
+    data["vehicle_compatibility"] = compatibility
+    data["vehicle_compatibility_label"] = compatibility_label(compatibility)
+    data["vehicle_compatibility_detail"] = compatibility_detail(compatibility)
+    # A confirmed third-party dependency (never inferred from missing data).
+    data["volunteer_transport_required"] = requires_volunteer_transport(
+        provider_vehicle, ngo_vehicle
+    )
     return data
 
 
@@ -455,6 +486,11 @@ def match_ngos(
     # Only trust rankings for NGOs we actually sent to the AI. Drop unknown
     # IDs, dedupe, and enrich each ranked NGO with its real ngos row.
     candidate_by_id = {str(row["id"]): row for row, _ in candidates}
+    # The provider's own transport capability, tri-state and read from the real
+    # providers row. It pairs with each NGO's answer to classify logistics. It
+    # is NOT part of the AI request: the AI contract has no vehicle field, so
+    # nothing here claims the model learned about vehicles.
+    provider_vehicle = (provider_row or {}).get("vehicle_available")
     seen: set[str] = set()
     ranked_ngos = []
     for item in result.ranked_ngos:
@@ -463,14 +499,32 @@ def match_ngos(
         seen.add(item.ngo_id)
         if item.ngo_id not in candidate_by_id:
             continue
-        ranked_ngos.append(_enrich_ranked_ngo(item, candidate_by_id))
+        ranked_ngos.append(_enrich_ranked_ngo(item, candidate_by_id, provider_vehicle))
+
+    # Deterministic logistics viability layer applied around the AI ranking (see
+    # app/services/vehicle_logistics.py for the documented ordering rule). No
+    # AI score is altered, candidates sharing a tier keep the AI's order, and no
+    # candidate is ever dropped — including the volunteer_required ones, which
+    # stay claimable and are flagged instead of rejected.
+    ordered_ngos, logistics_ordered = order_by_logistics(ranked_ngos)
+    volunteer_required_ids = [
+        item["ngo_id"] for item in ordered_ngos if item["volunteer_transport_required"]
+    ]
 
     return {
         "status": "ok",
         "donation_id": result.donation_id,
-        "ranked_ngos": ranked_ngos,
+        "ranked_ngos": ordered_ngos,
         "weights_used": result.weights_used,
         "insufficient_reason": None,
+        # Transport capability of the requesting provider, so the UI can render
+        # the pairing without a second request. null = not answered.
+        "provider_vehicle_available": provider_vehicle,
+        # True only when the logistics layer actually changed the AI's order.
+        "logistics_ordering_applied": logistics_ordered,
+        # NGOs that can only be served if a volunteer transports the food.
+        "volunteer_transport_required": bool(volunteer_required_ids),
+        "volunteer_required_ngo_ids": volunteer_required_ids,
     }
 
 
