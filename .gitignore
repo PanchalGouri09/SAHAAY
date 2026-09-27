@@ -53,3 +53,11 @@ desktop.ini
 
 # Node dependencies
 **/node_modules/
+
+# Standalone AI service (sahaay-ai-service)
+# .venv/, venv/, __pycache__/, *.py[cod] and .pytest_cache/ are already
+# ignored globally above; these are the AI-service-specific generated files.
+sahaay-ai-service/.venv/
+sahaay-ai-service/venv/
+sahaay-ai-service/app/ml/*.pkl
+sahaay-ai-service/app/storage/*.pdf

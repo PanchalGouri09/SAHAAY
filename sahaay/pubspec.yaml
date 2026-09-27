@@ -26,7 +26,7 @@ dependencies:
   http_parser: ^4.0.2
 
   # ---- Maps ----
-  google_maps_flutter: ^2.9.0
+  google_maps_flutter: ^2.18.2
   geolocator: ^13.0.1
   geocoding: ^5.0.0
 

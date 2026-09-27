@@ -2470,6 +2470,13 @@ class _RegisterProviderScreenState extends State<RegisterProviderScreen> {
         _showSnack(error.message, isError: true);
       }
       return;
+    } catch (_) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showSnack('Could not reach SAHAAY. Check your connection and try again.',
+            isError: true);
+      }
+      return;
     }
     if (!mounted) return;
     setState(() => _isLoading = false);
