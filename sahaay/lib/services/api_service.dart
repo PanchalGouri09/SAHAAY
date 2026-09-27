@@ -130,6 +130,33 @@ class ApiService {
   Future<Map<String, dynamic>> getDonation(String donationId) =>
       _request('GET', '/api/v1/donations/$donationId');
 
+  // ---------------------------------------------------------------------------
+  // Mandatory daily food entry (a food log, NOT a donation)
+  // ---------------------------------------------------------------------------
+  // These go through the same authenticated FastAPI boundary as everything
+  // else. The Flutter app never calls the AI service and never touches
+  // Supabase directly; the backend derives provider_id from the Firebase token
+  // and the entry date from its own clock.
+
+  /// Submits today's food entry. The backend creates the entry, calls the
+  /// existing AI surplus-prediction service and links the stored prediction.
+  Future<Map<String, dynamic>> createDailyFoodEntry(
+          Map<String, dynamic> payload) =>
+      _request('POST', '/api/v1/daily-food', body: payload);
+
+  /// Backend-authoritative check for today's entry. This — not a client-side
+  /// date — is what decides whether the provider must complete the entry.
+  Future<Map<String, dynamic>> getTodayDailyFoodEntry() =>
+      _request('GET', '/api/v1/daily-food/today');
+
+  /// The signed-in provider's previous daily entries, newest first.
+  Future<List<dynamic>> getDailyFoodHistory() async {
+    final response = await _request('GET', '/api/v1/daily-food/history');
+    return response['data'] is List
+        ? response['data'] as List<dynamic>
+        : <dynamic>[];
+  }
+
   Future<List<dynamic>> getClaims() async {
     final response = await _request('GET', '/api/v1/claims');
     return response['data'] is List ? response['data'] as List<dynamic> : <dynamic>[];

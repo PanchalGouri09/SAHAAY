@@ -10,6 +10,7 @@ from app.routers import (
     ai_features,
     claims,
     deliveries,
+    daily_food,
     donations,
     notifications,
     profile,
@@ -53,6 +54,7 @@ app.add_middleware(
 
 app.include_router(profile.router, prefix="/api/v1")
 app.include_router(donations.router, prefix="/api/v1")
+app.include_router(daily_food.router, prefix="/api/v1")
 app.include_router(claims.router, prefix="/api/v1")
 app.include_router(deliveries.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")

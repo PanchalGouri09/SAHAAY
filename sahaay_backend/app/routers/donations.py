@@ -34,6 +34,7 @@ from app.services.ai_client import (
     get_ai_client,
 )
 from app.services.food_mapping import map_food_category, map_veg_type_to_ai
+from app.services.predictions import insert_prediction, prediction_payload
 from app.supabase_client import get_supabase_client
 
 router = APIRouter(prefix="/donations", tags=["donations"])
@@ -73,20 +74,13 @@ def _persist_prediction(
 ) -> dict:
     """Persist an AI surplus prediction into the CURRENT food_predictions
     schema and link it to the donation via donations.prediction_id (an
-    existing nullable FK; no migration involved)."""
-    row = {
-        "provider_id": provider_id,
-        "prediction_date": request.date.isoformat(),
-        "day_of_week": request.day_of_week,
-        "planned_quantity": int(round(result.recommended_prepare_kg)),
-        "predicted_consumption": None,
-        "predicted_surplus": round(result.predicted_surplus_kg, 2),
-        "surplus_probability": None,
-        "recommendation": result.preparation_recommendation,
-        "model_version": result.model_version,
-    }
-    inserted = client.table("food_predictions").insert(row).select("id").execute()
-    prediction_id = inserted.data[0]["id"]
+    existing nullable FK; no migration involved).
+
+    The insert itself now lives in `app.services.predictions` so the donation
+    flow and the daily food entry flow cannot drift apart. The written columns,
+    the rounding of planned_quantity and the linked FK are all unchanged.
+    """
+    prediction_id = insert_prediction(client, provider_id, request, result)
     updated = (
         client.table("donations")
         .update({"prediction_id": prediction_id})
@@ -136,9 +130,7 @@ def _maybe_predict_surplus(
     return {
         "status": "saved",
         "prediction_id": updated["prediction_id"],
-        "predicted_surplus_kg": result.predicted_surplus_kg,
-        "recommended_prepare_kg": result.recommended_prepare_kg,
-        "preparation_recommendation": result.preparation_recommendation,
+        **prediction_payload(result),
     }
 
 

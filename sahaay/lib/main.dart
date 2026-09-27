@@ -388,6 +388,99 @@ class RewardBadge {
 }
 
 // =============================================================================
+// DAILY FOOD ENTRY — a provider's per-day food log + its AI prediction.
+// This is NOT a donation: no quantity/servings, address, expiry, deadline,
+// status, NGO or photo. It exists so a provider must report what they prepared
+// and sold today before the dashboard is reachable, and so the existing AI
+// surplus-prediction service is called with a real daily observation.
+//
+// The BACKEND is authoritative. `DailyFoodEntry.fromToday` returns null only
+// when the server says today's entry is missing; the client never decides that
+// from a local clock.
+// =============================================================================
+
+class DailyFoodEntry {
+  final String id;
+  final String entryDate;
+  final String foodCategory;
+  final double foodPreparedKg;
+  final double foodSoldKg;
+  final String? mealType;
+
+  /// The AI block exactly as the backend returned it. Null when the entry
+  /// exists but no prediction could be produced (AI unreachable, etc.).
+  final Map<String, dynamic>? prediction;
+
+  const DailyFoodEntry({
+    required this.id,
+    required this.entryDate,
+    required this.foodCategory,
+    required this.foodPreparedKg,
+    required this.foodSoldKg,
+    this.mealType,
+    this.prediction,
+  });
+
+  /// Parses a `GET /api/v1/daily-food/today` body. Returns null when the server
+  /// reports the entry is still required (this is the gate signal).
+  static DailyFoodEntry? fromToday(Map<String, dynamic> body) {
+    if (body['entry_required'] == true) return null;
+    final entry = body['data'];
+    if (entry is! Map<String, dynamic>) return null;
+    return DailyFoodEntry._fromEntry(entry, body['prediction']);
+  }
+
+  /// Parses a `POST /api/v1/daily-food` body, which is the entry row itself
+  /// plus a `prediction` block.
+  static DailyFoodEntry fromCreateResponse(Map<String, dynamic> body) =>
+      DailyFoodEntry._fromEntry(body, body['prediction']);
+
+  factory DailyFoodEntry._fromEntry(
+      Map<String, dynamic> entry, dynamic prediction) {
+    return DailyFoodEntry(
+      id: entry['id']?.toString() ?? '',
+      entryDate: entry['entry_date']?.toString() ?? '',
+      foodCategory: entry['food_category']?.toString() ?? '',
+      foodPreparedKg: _asDouble(entry['food_prepared_kg']),
+      foodSoldKg: _asDouble(entry['food_sold_kg']),
+      mealType: entry['meal_type']?.toString(),
+      prediction: prediction is Map<String, dynamic> ? prediction : null,
+    );
+  }
+
+  /// True only when the backend actually stored a prediction for this entry.
+  bool get hasPrediction => prediction?['status'] == 'saved';
+
+  /// 'saved' | 'skipped' | 'error' | 'unavailable' — whatever the backend said.
+  String? get predictionStatus => prediction?['status']?.toString();
+
+  /// The backend's explanation when a prediction is not available.
+  String? get predictionReason => prediction?['reason']?.toString();
+
+  double? get predictedSurplusKg =>
+      hasPrediction ? _asDoubleOrNull(prediction?['predicted_surplus_kg']) : null;
+
+  double? get recommendedPrepareKg =>
+      hasPrediction ? _asDoubleOrNull(prediction?['recommended_prepare_kg']) : null;
+
+  String? get preparationRecommendation =>
+      prediction?['preparation_recommendation']?.toString();
+
+  String? get predictionDate => prediction?['prediction_date']?.toString();
+
+  String? get modelVersion => prediction?['model_version']?.toString();
+}
+
+double _asDouble(dynamic value) =>
+    value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+
+double? _asDoubleOrNull(dynamic value) {
+  if (value is num) return value.toDouble();
+  if (value is String) return double.tryParse(value);
+  return null;
+}
+
+// =============================================================================
 // DATA SOURCE — returns REAL data once Supabase/FastAPI are wired in.
 // Every method here intentionally returns empty until then; screens are
 // already built to show proper empty/loading states for exactly this case.
@@ -452,6 +545,10 @@ class AppState extends ChangeNotifier {
   /// every request. Dashboards read this through [context.read<AppState>()].
   ApiService get api => authService.api;
 
+  /// True when Firebase has an authenticated user, regardless of whether a
+  /// SAHAAY `users` row exists yet (e.g. a brand-new Google user mid-enrollment).
+  bool get hasFirebaseUser => authService.hasFirebaseUser;
+
   Future<void> _initializeAuth() async {
     _applyProfile(await authService.currentProfile);
     _authSubscription = authService.authStateChanges.listen(_applyProfile);
@@ -478,6 +575,36 @@ class AppState extends ChangeNotifier {
 
   Future<void> login(String email, String password) async {
     _applyProfile(await authService.signIn(email: email, password: password));
+    notifyListeners();
+  }
+
+  /// Google OAuth via Firebase. Returns the loaded [AuthProfile] when the
+  /// user is an existing SAHAAY member, or `null` when the user cancelled the
+  /// Google picker OR when the Firebase session has no SAHAAY profile yet
+  /// (caller should route `hasFirebaseUser == true` into enrollment).
+  Future<AuthProfile?> loginWithGoogle() async {
+    final profile = await authService.signInWithGoogle();
+    if (profile != null) _applyProfile(profile);
+    notifyListeners();
+    return profile;
+  }
+
+  /// Completes first-time enrollment for an already-Firebase-authenticated
+  /// (Google) user — role selection + existing profile form -> POST /api/v1/profile.
+  Future<void> enroll({
+    required UserRole role,
+    required String fullName,
+    required String orgLabel,
+    String? phone,
+    Map<String, dynamic>? roleProfile,
+  }) async {
+    _applyProfile(await authService.completeEnrollment(
+      role: role.name,
+      fullName: fullName,
+      orgLabel: orgLabel,
+      phone: phone,
+      roleProfile: roleProfile,
+    ));
     notifyListeners();
   }
 
@@ -931,17 +1058,27 @@ class SecondaryButton extends StatelessWidget {
   final String label;
   final VoidCallback? onPressed;
   final IconData? icon;
+  final bool isLoading;
   const SecondaryButton(
-      {super.key, required this.label, required this.onPressed, this.icon});
+      {super.key,
+      required this.label,
+      required this.onPressed,
+      this.icon,
+      this.isLoading = false});
 
   @override
   Widget build(BuildContext context) {
     return OutlinedButton(
-      onPressed: onPressed,
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        if (icon != null) ...[Icon(icon, size: 20), const SizedBox(width: 8)],
-        Text(label),
-      ]),
+      onPressed: isLoading ? null : onPressed,
+      child: isLoading
+          ? const SizedBox(
+              height: 22,
+              width: 22,
+              child: CircularProgressIndicator(strokeWidth: 2.4))
+          : Row(mainAxisSize: MainAxisSize.min, children: [
+              if (icon != null) ...[Icon(icon, size: 20), const SizedBox(width: 8)],
+              Text(label),
+            ]),
     );
   }
 }
@@ -1457,8 +1594,19 @@ class ImpactCard extends StatelessWidget {
 /// AI result card — food surplus prediction. Shows a real result once the
 /// FastAPI prediction service is connected; until then it honestly shows
 /// a pending state rather than any invented numbers.
+/// AI Food Surplus Prediction — renders the REAL prediction the backend
+/// returned for today's daily food entry. There are no placeholder numbers
+/// here: every value shown comes from the AI service response, and a failed
+/// prediction renders as a clear, non-crashing error state instead.
 class SurplusPredictionCard extends StatelessWidget {
-  const SurplusPredictionCard({super.key});
+  /// Today's entry, or null when the server says it is still required.
+  final DailyFoodEntry? entry;
+
+  /// Re-reads today's entry from the backend. Used by the failed-prediction
+  /// state so the provider can retry without leaving the dashboard.
+  final Future<void> Function()? onRefresh;
+
+  const SurplusPredictionCard({super.key, this.entry, this.onRefresh});
 
   @override
   Widget build(BuildContext context) {
@@ -1478,23 +1626,154 @@ class SurplusPredictionCard extends StatelessWidget {
                           fontWeight: FontWeight.w800,
                           fontSize: 12.5,
                           letterSpacing: 0.3))),
+              if (entry?.hasPrediction == true && entry?.modelVersion != null)
+                Text(entry!.modelVersion!,
+                    style: TextStyle(
+                        fontSize: 10, color: c.textSecondary, letterSpacing: 0.3)),
             ]),
             const SizedBox(height: 12),
-            Row(children: [
-              Icon(Icons.hourglass_empty, size: 16, color: c.textSecondary),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'No prediction yet — this will appear automatically once the AI service is connected.',
-                  style: TextStyle(fontSize: 12.5, color: c.textSecondary),
-                ),
-              ),
-            ]),
+            ..._body(context, c),
           ],
         ),
       ),
     );
   }
+
+  List<Widget> _body(BuildContext context, AppColors c) {
+    if (entry == null) {
+      return [
+        Row(children: [
+          Icon(Icons.hourglass_empty, size: 16, color: c.textSecondary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              "Today's food entry has not been submitted yet. Complete the daily food entry to generate a prediction.",
+              style: TextStyle(fontSize: 12.5, color: c.textSecondary),
+            ),
+          ),
+        ]),
+      ];
+    }
+
+    if (!entry!.hasPrediction) {
+      return [
+        Row(children: [
+          Icon(Icons.warning_amber_rounded, size: 16, color: c.warning),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              entry!.predictionReason ??
+                  'The AI prediction is not available for today yet.',
+              style: TextStyle(fontSize: 12.5, color: c.textSecondary),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 10),
+        Text(
+          'Your food entry was saved. Refresh to check the prediction again.',
+          style: TextStyle(fontSize: 12, color: c.textSecondary),
+        ),
+        if (onRefresh != null) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => onRefresh!(),
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('Refresh'),
+              style: TextButton.styleFrom(
+                  padding: EdgeInsets.zero,
+                  minimumSize: const Size(0, 32),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+            ),
+          ),
+        ],
+      ];
+    }
+
+    return [
+      Row(children: [
+        Expanded(
+          child: _metric(
+            context,
+            c,
+            label: 'Predicted surplus',
+            value: '${_kg(entry!.predictedSurplusKg)} kg',
+            icon: Icons.trending_down,
+            strong: true,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _metric(
+            context,
+            c,
+            label: 'Recommended preparation',
+            value: '${_kg(entry!.recommendedPrepareKg)} kg',
+            icon: Icons.restaurant_outlined,
+          ),
+        ),
+      ]),
+      const SizedBox(height: 10),
+      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Icon(Icons.lightbulb_outline, size: 16, color: c.textSecondary),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            entry!.preparationRecommendation ?? '',
+            style: TextStyle(fontSize: 12.5, color: c.textPrimary),
+          ),
+        ),
+      ]),
+      const SizedBox(height: 8),
+      Row(children: [
+        Icon(Icons.event_outlined, size: 14, color: c.textSecondary),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            'Prediction date: ${entry!.predictionDate ?? entry!.entryDate}',
+            style: TextStyle(fontSize: 11.5, color: c.textSecondary),
+          ),
+        ),
+      ]),
+    ];
+  }
+
+  Widget _metric(BuildContext context, AppColors c,
+      {required String label,
+      required String value,
+      required IconData icon,
+      bool strong = false}) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: strong ? c.bluePrimary.withOpacity(0.10) : c.surfaceAlt,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(icon, size: 14, color: strong ? c.bluePrimary : c.textSecondary),
+          const SizedBox(width: 5),
+          Expanded(
+            child: Text(label,
+                style: TextStyle(fontSize: 10.5, color: c.textSecondary)),
+          ),
+        ]),
+        const SizedBox(height: 6),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 19,
+            fontWeight: FontWeight.w800,
+            color: strong ? c.bluePrimary : c.textPrimary,
+          ),
+        ),
+      ]),
+    );
+  }
+
+  /// Formats a backend-supplied kg value, never substituting a default number.
+  static String _kg(double? value) => value == null ? '—' : value.toStringAsFixed(1);
 }
 
 /// AI result card — NGO/donation weighted match score (FR-13). Renders a
@@ -1828,6 +2107,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passwordController = TextEditingController();
   bool _obscure = true;
   bool _isLoading = false;
+  bool _googleLoading = false;
   String? _error;
 
   @override
@@ -1869,6 +2149,57 @@ class _LoginScreenState extends State<LoginScreen> {
     Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const RoleRouter()),
         (route) => false);
+  }
+
+  Future<void> _signInWithGoogle() async {
+    if (_googleLoading || _isLoading) return; // ignore duplicate taps
+    final state = context.read<AppState>();
+    setState(() {
+      _googleLoading = true;
+      _error = null;
+    });
+    try {
+      final profile = await state.loginWithGoogle();
+      if (!mounted) return;
+      if (profile != null) {
+        // Existing SAHAAY user -> straight to their dashboard.
+        setState(() => _googleLoading = false);
+        Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const RoleRouter()),
+            (route) => false);
+        return;
+      }
+      if (!state.hasFirebaseUser) {
+        // User cancelled the Google account picker; nothing changed.
+        setState(() => _googleLoading = false);
+        return;
+      }
+      // Firebase session exists but no SAHAAY profile -> first-time enrollment.
+      setState(() => _googleLoading = false);
+      await Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) =>
+              const RoleSelectionScreen(googleEnrollment: true)));
+      if (!mounted) return;
+      final refreshed = context.read<AppState>();
+      if (!refreshed.isLoggedIn && refreshed.hasFirebaseUser) {
+        // Enrollment cancelled/not completed -> leave no orphaned session.
+        await refreshed.signOut();
+      }
+    } on AuthException catch (error) {
+      if (mounted) {
+        setState(() {
+          _googleLoading = false;
+          _error = error.message;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _googleLoading = false;
+          _error = 'Something went wrong. Please try again.';
+        });
+      }
+    }
   }
 
   Future<void> _resetPassword() async {
@@ -1957,12 +2288,10 @@ class _LoginScreenState extends State<LoginScreen> {
                     label: 'LOGIN', isLoading: _isLoading, onPressed: _login),
                 const SizedBox(height: AppSpacing.sm),
                 SecondaryButton(
-                  label: 'Continue with Google (demo)',
+                  label: 'Continue with Google',
                   icon: Icons.g_mobiledata,
-                  onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                          content: Text(
-                              'Google sign-in will be enabled once Firebase is configured.'))),
+                  isLoading: _googleLoading,
+                  onPressed: _signInWithGoogle,
                 ),
                 const SizedBox(height: AppSpacing.lg),
                 Row(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -1989,7 +2318,11 @@ class _LoginScreenState extends State<LoginScreen> {
 // =============================================================================
 
 class RoleSelectionScreen extends StatelessWidget {
-  const RoleSelectionScreen({super.key});
+  /// True when reached from Google first-time enrollment: the Firebase session
+  /// already exists and the user only needs to choose a role to complete their
+  /// SAHAAY profile. Normal registration always creates the Firebase account.
+  final bool googleEnrollment;
+  const RoleSelectionScreen({super.key, this.googleEnrollment = false});
 
   @override
   Widget build(BuildContext context) {
@@ -2002,16 +2335,29 @@ class RoleSelectionScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('What would you like to do?',
+            Text(googleEnrollment
+                ? 'Finish setting up your account'
+                : 'What would you like to do?',
                 style: Theme.of(context).textTheme.headlineSmall),
-            const SizedBox(height: AppSpacing.lg),
+            const SizedBox(height: AppSpacing.sm),
+            if (googleEnrollment) ...[
+              Text(
+                'You are signed in with Google. Choose a role to create your SAHAAY profile.',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: AppColors.of(context).textSecondary),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+            ],
             RoleCard(
               icon: Icons.restaurant_outlined,
               title: 'Food Provider',
               subtitle:
                   'Restaurant, hotel, college canteen or caterer donating surplus food.',
               onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => const RegisterProviderScreen())),
+                  builder: (_) =>
+                      RegisterProviderScreen(googleEnrollment: googleEnrollment))),
             ),
             const SizedBox(height: AppSpacing.md),
             RoleCard(
@@ -2019,7 +2365,9 @@ class RoleSelectionScreen extends StatelessWidget {
               title: 'NGO',
               subtitle: 'Discover and claim surplus food for your community.',
               onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const RegisterNgoScreen())),
+                  MaterialPageRoute(
+                      builder: (_) =>
+                          RegisterNgoScreen(googleEnrollment: googleEnrollment))),
             ),
             const SizedBox(height: AppSpacing.md),
             RoleCard(
@@ -2028,7 +2376,8 @@ class RoleSelectionScreen extends StatelessWidget {
               subtitle:
                   'Optionally help deliver food from providers to NGOs nearby.',
               onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => const RegisterVolunteerScreen())),
+                  builder: (_) =>
+                      RegisterVolunteerScreen(googleEnrollment: googleEnrollment))),
             ),
           ],
         ),
@@ -2042,7 +2391,8 @@ class RoleSelectionScreen extends StatelessWidget {
 // =============================================================================
 
 class RegisterProviderScreen extends StatefulWidget {
-  const RegisterProviderScreen({super.key});
+  const RegisterProviderScreen({super.key, this.googleEnrollment = false});
+  final bool googleEnrollment;
   @override
   State<RegisterProviderScreen> createState() => _RegisterProviderScreenState();
 }
@@ -2062,34 +2412,58 @@ class _RegisterProviderScreenState extends State<RegisterProviderScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_password.text != _confirmPassword.text) {
+    if (!widget.googleEnrollment &&
+        _password.text != _confirmPassword.text) {
       _showSnack('Passwords do not match.', isError: true);
       return;
     }
     setState(() => _isLoading = true);
     try {
-      await context.read<AppState>().register(
-            role: UserRole.provider,
-            email: _email.text,
-            password: _password.text,
-            fullName: _contactPerson.text.trim(),
-            orgLabel: _orgName.text.trim(),
-            phone: _phone.text.trim(),
-            roleProfile: {
-              'organization_name': _orgName.text.trim(),
-              'organization_type': switch (_type) {
-                ProviderType.restaurant => 'restaurant',
-                ProviderType.hotel => 'hotel',
-                ProviderType.collegeCanteen => 'canteen',
-                ProviderType.caterer => 'event_organizer',
-                ProviderType.bakery => 'other',
-                ProviderType.other => 'other',
+      if (widget.googleEnrollment) {
+        await context.read<AppState>().enroll(
+              role: UserRole.provider,
+              fullName: _contactPerson.text.trim(),
+              orgLabel: _orgName.text.trim(),
+              phone: _phone.text.trim(),
+              roleProfile: {
+                'organization_name': _orgName.text.trim(),
+                'organization_type': switch (_type) {
+                  ProviderType.restaurant => 'restaurant',
+                  ProviderType.hotel => 'hotel',
+                  ProviderType.collegeCanteen => 'canteen',
+                  ProviderType.caterer => 'event_organizer',
+                  ProviderType.bakery => 'other',
+                  ProviderType.other => 'other',
+                },
+                'address': _address.text.trim(),
+                'city': _city.text.trim(),
+                'phone': _phone.text.trim(),
               },
-              'address': _address.text.trim(),
-              'city': _city.text.trim(),
-              'phone': _phone.text.trim(),
-            },
-          );
+            );
+      } else {
+        await context.read<AppState>().register(
+              role: UserRole.provider,
+              email: _email.text,
+              password: _password.text,
+              fullName: _contactPerson.text.trim(),
+              orgLabel: _orgName.text.trim(),
+              phone: _phone.text.trim(),
+              roleProfile: {
+                'organization_name': _orgName.text.trim(),
+                'organization_type': switch (_type) {
+                  ProviderType.restaurant => 'restaurant',
+                  ProviderType.hotel => 'hotel',
+                  ProviderType.collegeCanteen => 'canteen',
+                  ProviderType.caterer => 'event_organizer',
+                  ProviderType.bakery => 'other',
+                  ProviderType.other => 'other',
+                },
+                'address': _address.text.trim(),
+                'city': _city.text.trim(),
+                'phone': _phone.text.trim(),
+              },
+            );
+      }
     } on AuthException catch (error) {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -2144,13 +2518,22 @@ class _RegisterProviderScreenState extends State<RegisterProviderScreen> {
                     prefixIcon: Icons.person_outline,
                     validator: _req),
                 const SizedBox(height: AppSpacing.md),
-                AppInputField(
+                if (!widget.googleEnrollment) AppInputField(
                     label: 'Email',
                     controller: _email,
                     keyboardType: TextInputType.emailAddress,
                     prefixIcon: Icons.email_outlined,
                     validator: _emailValidator),
-                const SizedBox(height: AppSpacing.md),
+                if (widget.googleEnrollment) ...[
+                  Text(
+                    'Signed in with Google — your Gmail will be used as your account email.',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(color: AppColors.of(context).textSecondary),
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                ],
                 AppInputField(
                     label: 'Phone',
                     controller: _phone,
@@ -2173,14 +2556,14 @@ class _RegisterProviderScreenState extends State<RegisterProviderScreen> {
                     helperText:
                         'Location pin drop available once Maps is connected.'),
                 const SizedBox(height: AppSpacing.md),
-                AppInputField(
+                if (!widget.googleEnrollment) AppInputField(
                     label: 'Password',
                     controller: _password,
                     obscureText: true,
                     prefixIcon: Icons.lock_outline,
                     validator: _passwordValidator),
                 const SizedBox(height: AppSpacing.md),
-                AppInputField(
+                if (!widget.googleEnrollment) AppInputField(
                     label: 'Confirm Password',
                     controller: _confirmPassword,
                     obscureText: true,
@@ -2216,7 +2599,8 @@ const _kFoodCategories = [
 ];
 
 class RegisterNgoScreen extends StatefulWidget {
-  const RegisterNgoScreen({super.key});
+  const RegisterNgoScreen({super.key, this.googleEnrollment = false});
+  final bool googleEnrollment;
   @override
   State<RegisterNgoScreen> createState() => _RegisterNgoScreenState();
 }
@@ -2238,7 +2622,8 @@ class _RegisterNgoScreenState extends State<RegisterNgoScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_password.text != _confirmPassword.text) {
+    if (!widget.googleEnrollment &&
+        _password.text != _confirmPassword.text) {
       _showSnack('Passwords do not match.', isError: true);
       return;
     }
@@ -2248,23 +2633,41 @@ class _RegisterNgoScreenState extends State<RegisterNgoScreen> {
     }
     setState(() => _isLoading = true);
     try {
-      await context.read<AppState>().register(
-            role: UserRole.ngo,
-            email: _email.text,
-            password: _password.text,
-            fullName: _contactPerson.text.trim(),
-            orgLabel: _ngoName.text.trim(),
-            phone: _phone.text.trim(),
-            roleProfile: {
-              'organization_name': _ngoName.text.trim(),
-              'registration_number': _regId.text.trim(),
-              'address': _address.text.trim(),
-              'city': _city.text.trim(),
-              'phone': _phone.text.trim(),
-              'food_capacity': int.tryParse(_capacity.text.trim()),
-              'preferred_food_types': _categories.toList(),
-            },
-          );
+      if (widget.googleEnrollment) {
+        await context.read<AppState>().enroll(
+              role: UserRole.ngo,
+              fullName: _contactPerson.text.trim(),
+              orgLabel: _ngoName.text.trim(),
+              phone: _phone.text.trim(),
+              roleProfile: {
+                'organization_name': _ngoName.text.trim(),
+                'registration_number': _regId.text.trim(),
+                'address': _address.text.trim(),
+                'city': _city.text.trim(),
+                'phone': _phone.text.trim(),
+                'food_capacity': int.tryParse(_capacity.text.trim()),
+                'preferred_food_types': _categories.toList(),
+              },
+            );
+      } else {
+        await context.read<AppState>().register(
+              role: UserRole.ngo,
+              email: _email.text,
+              password: _password.text,
+              fullName: _contactPerson.text.trim(),
+              orgLabel: _ngoName.text.trim(),
+              phone: _phone.text.trim(),
+              roleProfile: {
+                'organization_name': _ngoName.text.trim(),
+                'registration_number': _regId.text.trim(),
+                'address': _address.text.trim(),
+                'city': _city.text.trim(),
+                'phone': _phone.text.trim(),
+                'food_capacity': int.tryParse(_capacity.text.trim()),
+                'preferred_food_types': _categories.toList(),
+              },
+            );
+      }
     } on AuthException catch (error) {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -2315,13 +2718,22 @@ class _RegisterNgoScreenState extends State<RegisterNgoScreen> {
                     prefixIcon: Icons.person_outline,
                     validator: _req),
                 const SizedBox(height: AppSpacing.md),
-                AppInputField(
+                if (!widget.googleEnrollment) AppInputField(
                     label: 'Email',
                     controller: _email,
                     keyboardType: TextInputType.emailAddress,
                     prefixIcon: Icons.email_outlined,
                     validator: _emailValidator),
-                const SizedBox(height: AppSpacing.md),
+                if (widget.googleEnrollment) ...[
+                  Text(
+                    'Signed in with Google — your Gmail will be used as your account email.',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(color: AppColors.of(context).textSecondary),
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                ],
                 AppInputField(
                     label: 'Phone',
                     controller: _phone,
@@ -2368,14 +2780,14 @@ class _RegisterNgoScreenState extends State<RegisterNgoScreen> {
                   }).toList(),
                 ),
                 const SizedBox(height: AppSpacing.md),
-                AppInputField(
+                if (!widget.googleEnrollment) AppInputField(
                     label: 'Password',
                     controller: _password,
                     obscureText: true,
                     prefixIcon: Icons.lock_outline,
                     validator: _passwordValidator),
                 const SizedBox(height: AppSpacing.md),
-                AppInputField(
+                if (!widget.googleEnrollment) AppInputField(
                     label: 'Confirm Password',
                     controller: _confirmPassword,
                     obscureText: true,
@@ -2402,7 +2814,8 @@ class _RegisterNgoScreenState extends State<RegisterNgoScreen> {
 const _kWeekDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 class RegisterVolunteerScreen extends StatefulWidget {
-  const RegisterVolunteerScreen({super.key});
+  const RegisterVolunteerScreen({super.key, this.googleEnrollment = false});
+  final bool googleEnrollment;
   @override
   State<RegisterVolunteerScreen> createState() =>
       _RegisterVolunteerScreenState();
@@ -2422,23 +2835,38 @@ class _RegisterVolunteerScreenState extends State<RegisterVolunteerScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_password.text != _confirmPassword.text) {
+    if (!widget.googleEnrollment &&
+        _password.text != _confirmPassword.text) {
       _showSnack('Passwords do not match.', isError: true);
       return;
     }
     setState(() => _isLoading = true);
     try {
-      await context.read<AppState>().register(
-            role: UserRole.volunteer,
-            email: _email.text,
-            password: _password.text,
-            fullName: _fullName.text.trim(),
-            orgLabel: _fullName.text.trim(),
-            phone: _phone.text.trim(),
-            roleProfile: {
-              'availability_status': _days.isEmpty ? 'offline' : 'available',
-            },
-          );
+      if (widget.googleEnrollment) {
+        await context.read<AppState>().enroll(
+              role: UserRole.volunteer,
+              fullName: _fullName.text.trim(),
+              orgLabel: _fullName.text.trim(),
+              phone: _phone.text.trim(),
+              roleProfile: {
+                'availability_status':
+                    _days.isEmpty ? 'offline' : 'available',
+              },
+            );
+      } else {
+        await context.read<AppState>().register(
+              role: UserRole.volunteer,
+              email: _email.text,
+              password: _password.text,
+              fullName: _fullName.text.trim(),
+              orgLabel: _fullName.text.trim(),
+              phone: _phone.text.trim(),
+              roleProfile: {
+                'availability_status':
+                    _days.isEmpty ? 'offline' : 'available',
+              },
+            );
+      }
     } on AuthException catch (error) {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -2477,13 +2905,22 @@ class _RegisterVolunteerScreenState extends State<RegisterVolunteerScreen> {
                     prefixIcon: Icons.person_outline,
                     validator: _req),
                 const SizedBox(height: AppSpacing.md),
-                AppInputField(
+                if (!widget.googleEnrollment) AppInputField(
                     label: 'Email',
                     controller: _email,
                     keyboardType: TextInputType.emailAddress,
                     prefixIcon: Icons.email_outlined,
                     validator: _emailValidator),
-                const SizedBox(height: AppSpacing.md),
+                if (widget.googleEnrollment) ...[
+                  Text(
+                    'Signed in with Google — your Gmail will be used as your account email.',
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(color: AppColors.of(context).textSecondary),
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                ],
                 AppInputField(
                     label: 'Phone',
                     controller: _phone,
@@ -2528,14 +2965,14 @@ class _RegisterVolunteerScreenState extends State<RegisterVolunteerScreen> {
                   }).toList(),
                 ),
                 const SizedBox(height: AppSpacing.md),
-                AppInputField(
+                if (!widget.googleEnrollment) AppInputField(
                     label: 'Password',
                     controller: _password,
                     obscureText: true,
                     prefixIcon: Icons.lock_outline,
                     validator: _passwordValidator),
                 const SizedBox(height: AppSpacing.md),
-                AppInputField(
+                if (!widget.googleEnrollment) AppInputField(
                     label: 'Confirm Password',
                     controller: _confirmPassword,
                     obscureText: true,
@@ -2567,6 +3004,426 @@ String? _passwordValidator(String? v) =>
     (v == null || v.length < 6) ? 'Minimum 6 characters' : null;
 
 // =============================================================================
+// DAILY FOOD ENTRY — mandatory gate before the Provider dashboard
+// -----------------------------------------------------------------------------
+// A daily food entry is a food log, NOT a donation. This screen therefore asks
+// for exactly three required things (category, prepared kg, sold kg) plus an
+// optional meal type, and nothing donation-shaped: no quantity/servings, no
+// pickup address, no expiry, no pickup deadline, no donation status, no NGO,
+// no volunteer and no food photo.
+//
+// The provider is never asked for or allowed to send an id or a date — the
+// backend derives both from the Firebase token and its own clock.
+// =============================================================================
+
+/// Categories offered here are only those the EXISTING AI mapping can resolve
+/// (cooked | bakery | dairy | packaged | raw). 'Other' is deliberately absent
+/// because it has no AI mapping and the backend rejects it.
+const _kDailyFoodCategories = [
+  'Cooked Meals',
+  'Rice',
+  'Bread',
+  'Bakery',
+  'Dairy',
+  'Packaged Food',
+  'Fruits',
+  'Vegetables',
+];
+
+const _kMealTypes = [
+  ('breakfast', 'Breakfast'),
+  ('lunch', 'Lunch'),
+  ('snacks', 'Snacks'),
+  ('dinner', 'Dinner'),
+  ('other', 'Other'),
+];
+
+/// Shown after a successful submission. Also renders the error state when the
+/// AI service could not produce a prediction, so the provider is never shown a
+/// fake or missing number.
+class DailyFoodEntryResultView extends StatelessWidget {
+  final DailyFoodEntry entry;
+  const DailyFoodEntryResultView({super.key, required this.entry});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('AI Food Surplus Prediction',
+          style: Theme.of(context).textTheme.headlineSmall),
+      const SizedBox(height: 4),
+      Text('${entry.entryDate} · ${entry.foodCategory}',
+          style: TextStyle(color: c.textSecondary)),
+      const SizedBox(height: AppSpacing.md),
+      SurplusPredictionCard(entry: entry),
+      const SizedBox(height: AppSpacing.md),
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(AppSpacing.md),
+        decoration: BoxDecoration(
+          color: c.surfaceAlt,
+          borderRadius: BorderRadius.circular(AppRadius.card),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Today\'s food entry',
+              style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Text('Prepared: ${entry.foodPreparedKg.toStringAsFixed(1)} kg',
+              style: TextStyle(fontSize: 13, color: c.textSecondary)),
+          Text('Sold / consumed: ${entry.foodSoldKg.toStringAsFixed(1)} kg',
+              style: TextStyle(fontSize: 13, color: c.textSecondary)),
+          if (entry.mealType != null)
+            Text('Meal type: ${entry.mealType}',
+                style: TextStyle(fontSize: 13, color: c.textSecondary)),
+        ]),
+      ),
+    ]);
+  }
+}
+
+class DailyFoodEntryScreen extends StatefulWidget {
+  /// Called with the saved entry so the gate can hand the provider through to
+  /// the dashboard without re-showing this form.
+  final ValueChanged<DailyFoodEntry> onSubmitted;
+
+  /// Overridable so the submit path can be exercised without a live backend.
+  @visibleForTesting
+  final Future<Map<String, dynamic>> Function(Map<String, dynamic> payload)?
+      submit;
+
+  const DailyFoodEntryScreen(
+      {super.key, required this.onSubmitted, this.submit});
+
+  @override
+  State<DailyFoodEntryScreen> createState() => _DailyFoodEntryScreenState();
+}
+
+class _DailyFoodEntryScreenState extends State<DailyFoodEntryScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _preparedController = TextEditingController();
+  final _soldController = TextEditingController();
+  String _category = _kDailyFoodCategories.first;
+  String? _mealType;
+  bool _submitting = false;
+  String? _submitError;
+  DailyFoodEntry? _saved;
+
+  @override
+  void dispose() {
+    _preparedController.dispose();
+    _soldController.dispose();
+    super.dispose();
+  }
+
+  /// Same rule the donation flow already uses: prepared > 0, sold >= 0 and
+  /// sold <= prepared. Both values are always required here (unlike the
+  /// optional donation pair) and are always kilograms — never servings.
+  String? _validateKg(String? raw, {required bool isPrepared}) {
+    final text = raw?.trim() ?? '';
+    if (text.isEmpty) {
+      return isPrepared ? 'Prepared (kg) is required' : 'Sold (kg) is required';
+    }
+    final value = double.tryParse(text);
+    if (value == null) return 'Enter a number';
+    if (isPrepared && value <= 0) {
+      return 'Prepared (kg) must be greater than 0';
+    }
+    if (!isPrepared && value < 0) return 'Sold (kg) cannot be negative';
+    return null;
+  }
+
+  String? _validateSoldAgainstPrepared(String? raw) {
+    final base = _validateKg(raw, isPrepared: false);
+    if (base != null) return base;
+    final prepared = double.tryParse(_preparedController.text.trim());
+    final sold = double.tryParse(raw!.trim());
+    if (prepared != null && sold != null && sold > prepared) {
+      return 'Sold (kg) cannot exceed Prepared (kg)';
+    }
+    return null;
+  }
+
+  Future<void> _submit() async {
+    final formValid = _formKey.currentState!.validate();
+    if (!formValid) return;
+    setState(() {
+      _submitting = true;
+      _submitError = null;
+    });
+
+    final payload = <String, dynamic>{
+      'food_category': _category,
+      'food_prepared_kg':
+          double.parse(_preparedController.text.trim()),
+      'food_sold_kg': double.parse(_soldController.text.trim()),
+      if (_mealType != null) 'meal_type': _mealType,
+      // No provider_id and no date: the backend owns both.
+    };
+
+    try {
+      final response = widget.submit != null
+          ? await widget.submit!(payload)
+          : await context.read<AppState>().api.createDailyFoodEntry(payload);
+      if (!mounted) return;
+      final entry = DailyFoodEntry.fromCreateResponse(response);
+      setState(() {
+        _saved = entry;
+        _submitting = false;
+      });
+      widget.onSubmitted(entry);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _submitError = e is ApiException
+            ? _apiErrorMessage(e,
+                fallback: 'Could not save today\'s food entry. Please try again.')
+            : 'Could not save today\'s food entry. Please try again.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final saved = _saved;
+
+    return Scaffold(
+      body: SafeArea(
+        child: saved != null
+            ? SingleChildScrollView(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                child: DailyFoodEntryResultView(entry: saved),
+              )
+            : ListView(
+                padding: const EdgeInsets.all(AppSpacing.lg),
+                children: [
+                  const SahaayLogo(),
+                  const SizedBox(height: AppSpacing.lg),
+                  Text('Daily Food Entry',
+                      style: Theme.of(context).textTheme.headlineMedium),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Tell us what you prepared and sold today so SAHAAY can '
+                    'predict your surplus. One entry per day.',
+                    style: TextStyle(color: c.textSecondary),
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+                  if (_submitError != null) ...[
+                    Container(
+                      padding: const EdgeInsets.all(AppSpacing.md),
+                      decoration: BoxDecoration(
+                        color: c.danger.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(AppRadius.card),
+                        border: Border.all(color: c.danger.withValues(alpha: 0.4)),
+                      ),
+                      child: Row(children: [
+                        Icon(Icons.error_outline, color: c.danger, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(_submitError!,
+                              style:
+                                  TextStyle(fontSize: 12.5, color: c.danger)),
+                        ),
+                      ]),
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                  ],
+                  Form(
+                    key: _formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        DropdownButtonFormField<String>(
+                          initialValue: _category,
+                          decoration: const InputDecoration(
+                              labelText: 'Food Category'),
+                          items: _kDailyFoodCategories
+                              .map((cat) => DropdownMenuItem(
+                                  value: cat, child: Text(cat)))
+                              .toList(),
+                          onChanged: _submitting
+                              ? null
+                              : (v) => setState(() => _category = v ?? _category),
+                        ),
+                        const SizedBox(height: AppSpacing.md),
+                        Row(children: [
+                          Expanded(
+                            child: AppInputField(
+                              label: 'Prepared food (kg)',
+                              controller: _preparedController,
+                              prefixIcon: Icons.kitchen_outlined,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                      decimal: true),
+                              validator: (v) =>
+                                  _validateKg(v, isPrepared: true),
+                            ),
+                          ),
+                          const SizedBox(width: AppSpacing.md),
+                          Expanded(
+                            child: AppInputField(
+                              label: 'Sold / consumed (kg)',
+                              controller: _soldController,
+                              prefixIcon: Icons.point_of_sale_outlined,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                      decimal: true),
+                              validator: _validateSoldAgainstPrepared,
+                            ),
+                          ),
+                        ]),
+                        const SizedBox(height: AppSpacing.md),
+                        DropdownButtonFormField<String>(
+                          initialValue: _mealType,
+                          decoration: const InputDecoration(
+                            labelText: 'Meal type (optional)',
+                            hintText: 'Not specified',
+                          ),
+                          items: _kMealTypes
+                              .map((m) => DropdownMenuItem(
+                                  value: m.$1, child: Text(m.$2)))
+                              .toList(),
+                          onChanged: _submitting
+                              ? null
+                              : (v) => setState(() => _mealType = v),
+                        ),
+                        const SizedBox(height: AppSpacing.lg),
+                        PrimaryButton(
+                          label: 'SUBMIT TODAY\'S ENTRY',
+                          icon: Icons.check,
+                          isLoading: _submitting,
+                          onPressed: _submit,
+                        ),
+                        const SizedBox(height: AppSpacing.md),
+                        Text(
+                          'This is a food log, not a donation. Submitting it '
+                          'does not list any food for NGOs.',
+                          textAlign: TextAlign.center,
+                          style:
+                              TextStyle(fontSize: 12, color: c.textSecondary),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+/// Gates the Provider dashboard on the BACKEND's answer to "does today's entry
+/// exist?". The client never decides this from a local date, and once the entry
+/// is saved the form is not shown again.
+class ProviderDailyEntryGate extends StatefulWidget {
+  /// Overridable so the gate can be exercised without a live backend.
+  @visibleForTesting
+  final Future<Map<String, dynamic>> Function()? loadToday;
+
+  const ProviderDailyEntryGate({super.key, this.loadToday});
+
+  @override
+  State<ProviderDailyEntryGate> createState() =>
+      _ProviderDailyEntryGateState();
+}
+
+class _ProviderDailyEntryGateState extends State<ProviderDailyEntryGate> {
+  bool _loading = true;
+  String? _error;
+  DailyFoodEntry? _entry;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+    try {
+      final body = widget.loadToday != null
+          ? await widget.loadToday!()
+          : await context.read<AppState>().api.getTodayDailyFoodEntry();
+      if (!mounted) return;
+      setState(() {
+        _entry = DailyFoodEntry.fromToday(body);
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e is ApiException
+            ? _apiErrorMessage(e,
+                fallback: 'Could not check today\'s food entry.')
+            : 'Could not check today\'s food entry.';
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+
+    if (_loading) {
+      return Scaffold(
+        body: Center(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: AppSpacing.md),
+            Text('Checking today\'s food entry…',
+                style: TextStyle(color: c.textSecondary)),
+          ]),
+        ),
+      );
+    }
+
+    // A failed check must NOT be treated as "no entry required" — the
+    // dashboard stays locked until the backend can confirm the entry exists.
+    if (_error != null) {
+      return Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.cloud_off_outlined, size: 40, color: c.textSecondary),
+              const SizedBox(height: AppSpacing.md),
+              Text(_error!,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: c.textSecondary)),
+              const SizedBox(height: AppSpacing.md),
+              SecondaryButton(
+                label: 'RETRY',
+                icon: Icons.refresh,
+                onPressed: _load,
+              ),
+            ]),
+          ),
+        ),
+      );
+    }
+
+    final entry = _entry;
+    if (entry == null) {
+      return DailyFoodEntryScreen(
+        onSubmitted: (saved) => setState(() => _entry = saved),
+      );
+    }
+
+    return ProviderDashboardScreen(
+      dailyEntry: entry,
+      onDailyEntryChanged: _load,
+    );
+  }
+}
+
+// =============================================================================
 // ROLE ROUTER — sends the signed-in user to the correct dashboard
 // =============================================================================
 
@@ -2580,7 +3437,8 @@ class RoleRouter extends StatelessWidget {
       return const WelcomeScreen();
     switch (state.currentRole!) {
       case UserRole.provider:
-        return const ProviderDashboardScreen();
+        // Providers pass through the mandatory daily food entry gate first.
+        return const ProviderDailyEntryGate();
       case UserRole.ngo:
         return const NgoDashboardScreen();
       case UserRole.volunteer:
@@ -2618,7 +3476,16 @@ void _openNotifications(BuildContext context, UserRole role) {
 // =============================================================================
 
 class ProviderDashboardScreen extends StatefulWidget {
-  const ProviderDashboardScreen({super.key});
+  /// Today's daily food entry, resolved by [ProviderDailyEntryGate] from the
+  /// backend. Null only when the entry is somehow missing after the gate.
+  final DailyFoodEntry? dailyEntry;
+
+  /// Re-reads today's entry from the backend (used by the prediction retry).
+  final Future<void> Function()? onDailyEntryChanged;
+
+  const ProviderDashboardScreen(
+      {super.key, this.dailyEntry, this.onDailyEntryChanged});
+
   @override
   State<ProviderDashboardScreen> createState() =>
       _ProviderDashboardScreenState();
@@ -2707,7 +3574,11 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
       pageAt(
         0,
         _ProviderHomeTab(
-            donations: _donations, onCreateDonation: _createDonation),
+          donations: _donations,
+          onCreateDonation: _createDonation,
+          dailyEntry: widget.dailyEntry,
+          onRefreshPrediction: widget.onDailyEntryChanged,
+        ),
       ),
       pageAt(1, _ProviderDonationsTab(donations: _donations)),
       pageAt(
@@ -3272,8 +4143,13 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
 class _ProviderHomeTab extends StatelessWidget {
   final List<Donation> donations;
   final VoidCallback onCreateDonation;
+  final DailyFoodEntry? dailyEntry;
+  final Future<void> Function()? onRefreshPrediction;
   const _ProviderHomeTab(
-      {required this.donations, required this.onCreateDonation});
+      {required this.donations,
+      required this.onCreateDonation,
+      this.dailyEntry,
+      this.onRefreshPrediction});
 
   @override
   Widget build(BuildContext context) {
@@ -3337,7 +4213,10 @@ class _ProviderHomeTab extends StatelessWidget {
                   icon: Icons.add,
                   onPressed: onCreateDonation),
               const SizedBox(height: AppSpacing.lg),
-              const SurplusPredictionCard(),
+              SurplusPredictionCard(
+                entry: dailyEntry,
+                onRefresh: onRefreshPrediction,
+              ),
               const SizedBox(height: AppSpacing.lg),
               const SectionHeader(title: 'Recent Donations'),
               const SizedBox(height: 10),

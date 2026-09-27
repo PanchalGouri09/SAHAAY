@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 import 'api_service.dart';
 
@@ -31,12 +32,16 @@ class AuthProfile {
 class FirebaseAuthService {
   final FirebaseAuth _auth;
   final ApiService _api;
+  final GoogleSignIn _googleSignIn;
 
-  FirebaseAuthService({FirebaseAuth? auth, ApiService? api})
+  FirebaseAuthService({FirebaseAuth? auth, ApiService? api, GoogleSignIn? googleSignIn})
       : _auth = auth ?? FirebaseAuth.instance,
-        _api = api ?? ApiService(auth: auth ?? FirebaseAuth.instance);
+        _api = api ?? ApiService(auth: auth ?? FirebaseAuth.instance),
+        _googleSignIn = googleSignIn ?? GoogleSignIn();
 
   ApiService get api => _api;
+
+  bool get hasFirebaseUser => _auth.currentUser != null;
 
   Stream<AuthProfile?> get authStateChanges => _auth.authStateChanges().asyncMap(_profileForUser);
 
@@ -94,6 +99,68 @@ class FirebaseAuthService {
       }
     } on FirebaseAuthException catch (error) {
       throw AuthException(_messageFor(error));
+    }
+  }
+
+  /// Google OAuth flow: Google account -> Firebase credential -> backend profile.
+  ///
+  /// Returns `null` when the user cancels the Google picker, or when Firebase
+  /// authentication succeeds but the user has no SAHAAY `users` row yet
+  /// (a brand-new Google user — the caller must then run the enrollment flow).
+  /// Identity is always re-derrived server-side from the verified Firebase
+  /// token; no firebase_uid is ever sent from the client.
+  Future<AuthProfile?> signInWithGoogle() async {
+    try {
+      final googleUser = await _googleSignIn.signIn();
+      if (googleUser == null) return null; // user cancelled the picker
+      final googleAuth = await googleUser.authentication;
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+      final userCredential = await _auth.signInWithCredential(credential);
+      return await _profileForUser(userCredential.user);
+    } on FirebaseAuthException catch (error) {
+      throw AuthException(_messageFor(error));
+    } on ApiException catch (error) {
+      if (error.statusCode == 404) return null;
+      throw AuthException(error.message);
+    } catch (_) {
+      throw const AuthException('Google sign-in failed. Please try again.');
+    }
+  }
+
+  /// Completes the SAHAAY profile for an already-Firebase-authenticated user
+  /// (Google first-time enrollment). Reuses POST /api/v1/profile with the
+  /// authenticated session token, exactly like email/password registration.
+  ///
+  /// Unlike email/password registration, the Firebase account is NOT deleted
+  /// on failure — the Google identity is owned by Google, and rolling it back
+  /// could orphan a real user account. The caller surfaces the error instead.
+  Future<AuthProfile> completeEnrollment({
+    required String role,
+    required String fullName,
+    required String orgLabel,
+    String? phone,
+    Map<String, dynamic>? roleProfile,
+  }) async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      throw const AuthException('Your session expired. Please log in again.');
+    }
+    try {
+      final response = await _api.createProfile({
+        'full_name': fullName,
+        'email': user.email ?? '',
+        'phone': phone,
+        'role': role,
+        if (role == 'provider') 'provider': roleProfile,
+        if (role == 'ngo') 'ngo': roleProfile,
+        if (role == 'volunteer') 'volunteer': roleProfile,
+      });
+      return _profileFromBackend(response, user);
+    } on ApiException catch (error) {
+      throw AuthException(error.message);
     }
   }
 
