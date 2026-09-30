@@ -27,6 +27,8 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
@@ -39,9 +41,15 @@ import 'services/firebase_auth_service.dart';
 import 'services/permission_service.dart';
 import 'services/supabase_service.dart';
 
+final GlobalKey<NavigatorState> _appNavigatorKey = GlobalKey<NavigatorState>();
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  FirebaseMessaging.onBackgroundMessage(
+    AppState._firebaseMessagingBackgroundHandler,
+  );
+  await FirebaseMessaging.instance.setAutoInitEnabled(true);
   await SupabaseService.initializeIfConfigured();
   runApp(const SahaayApp());
 }
@@ -438,6 +446,22 @@ class VolunteerTransportTask {
 
 enum NotificationCategory { donation, matching, volunteer, reward, system }
 
+({String title, String body, NotificationCategory category})
+    notificationTapContent(RemoteMessage message) {
+  final type = message.data['type']?.toString();
+  return (
+    title: message.notification?.title ?? 'SAHAAY Notification',
+    body: message.notification?.body ??
+        (type == null ? 'You have a new update.' : 'You have a new $type update.'),
+    category: switch (type) {
+      'donation' => NotificationCategory.donation,
+      'claim' => NotificationCategory.matching,
+      'delivery' => NotificationCategory.volunteer,
+      _ => NotificationCategory.system,
+    },
+  );
+}
+
 class AppNotificationItem {
   final String? id; // backend notification id (null for local session ones)
   final String title;
@@ -619,6 +643,10 @@ class AppState extends ChangeNotifier {
   String currentName = '';
   String currentOrgLabel = ''; // business/NGO name where relevant
 
+  // FCM token for push notifications
+  String? fcmToken;
+  RemoteMessage? _pendingNotificationTap;
+
   // Real, session-based notifications — generated only from actual actions
   // the signed-in user takes (creating a donation, claiming one, accepting
   // or completing a delivery). Never pre-seeded with invented content.
@@ -626,6 +654,7 @@ class AppState extends ChangeNotifier {
 
   AppState(this.authService) {
     ready = _initializeAuth();
+    _initializeFcm().ignore();
   }
 
   /// Backend API access — adds the Firebase ID token as a Bearer header on
@@ -642,12 +671,38 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Listen for FCM token changes and incoming messages.
+  Future<void> _initializeFcm() async {
+    FirebaseMessaging.instance.onTokenRefresh.listen((_) {
+      refreshFcmTokenRegistration().ignore();
+    });
+
+    // Handle foreground messages
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      final content = notificationTapContent(message);
+      pushNotification(content.title, content.body, content.category);
+    });
+
+    // Handle notification tap
+    FirebaseMessaging.instance.getInitialMessage().then((RemoteMessage? message) {
+      if (message != null) {
+        _handleNotificationTap(message);
+      }
+    });
+
+    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      _handleNotificationTap(message);
+    });
+  }
+
   void _applyProfile(AuthProfile? profile) {
     if (profile == null) {
       isLoggedIn = false;
       currentRole = null;
       currentName = '';
       currentOrgLabel = '';
+      fcmToken = null;
+      _pendingNotificationTap = null;
       return;
     }
     final role = UserRole.values
@@ -658,6 +713,12 @@ class AppState extends ChangeNotifier {
     currentName = profile.fullName;
     currentOrgLabel = profile.orgLabel;
     isLoggedIn = true;
+    refreshFcmTokenRegistration().ignore();
+    final pending = _pendingNotificationTap;
+    if (pending != null) {
+      _pendingNotificationTap = null;
+      scheduleMicrotask(() => _handleNotificationTap(pending));
+    }
   }
 
   Future<void> login(String email, String password) async {
@@ -720,10 +781,44 @@ class AppState extends ChangeNotifier {
       authService.sendPasswordResetEmail(email);
 
   Future<void> signOut() async {
-    await authService.signOut();
-    _applyProfile(null);
-    notifications.clear();
-    notifyListeners();
+    try {
+      await authService.signOut();
+    } finally {
+      _applyProfile(null);
+      notifications.clear();
+      notifyListeners();
+    }
+  }
+
+  /// Register the FCM token with the backend API.
+  /// Should be called after obtaining the FCM token.
+  Future<void> registerFcmTokenWithBackend(String token, String platform) async {
+    if (!isLoggedIn) return;
+    try {
+      await api.registerFcmToken(token, platform);
+      fcmToken = token;
+      notifyListeners();
+    } catch (_) {
+      // Push registration must not block normal app use.
+    }
+  }
+
+  Future<void> refreshFcmTokenRegistration() async {
+    if (!isLoggedIn) return;
+    try {
+      final permission = await activePermissionService()
+          .status(AppPermission.notifications);
+      if (permission != PermissionOutcome.granted &&
+          permission != PermissionOutcome.notRequired) {
+        return;
+      }
+      final token = await FirebaseMessaging.instance.getToken();
+      if (token == null || token.isEmpty) return;
+      final platform = kIsWeb ? 'web' : defaultTargetPlatform.name.toLowerCase();
+      if (const {'android', 'ios', 'web'}.contains(platform)) {
+        await registerFcmTokenWithBackend(token, platform);
+      }
+    } catch (_) {}
   }
 
   void pushNotification(
@@ -751,6 +846,27 @@ class AppState extends ChangeNotifier {
     final period = now.period == DayPeriod.am ? 'AM' : 'PM';
     return '$hour:$minute $period';
   }
+
+  /// Get FCM token for the current user
+  /// Handle notification tap - navigate to relevant screen or show notifications
+  void _handleNotificationTap(RemoteMessage message) {
+    if (!isLoggedIn || currentRole == null) {
+      _pendingNotificationTap = message;
+      return;
+    }
+    final content = notificationTapContent(message);
+    pushNotification(content.title, content.body, content.category);
+    final role = currentRole;
+    if (isLoggedIn && role != null) {
+      _appNavigatorKey.currentState?.push(MaterialPageRoute<void>(
+        builder: (_) => NotificationsScreen(role: role),
+      ));
+    }
+  }
+
+  /// Background message handler
+  static Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) =>
+      Future<void>.value();
 
   void toggleTheme() {
     themeMode = themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
@@ -1028,6 +1144,7 @@ class SahaayApp extends StatelessWidget {
       child: Consumer<AppState>(
         builder: (context, state, _) {
           return MaterialApp(
+            navigatorKey: _appNavigatorKey,
             title: 'SAHAAY',
             debugShowCheckedModeBanner: false,
             theme: sahaayLightTheme,
@@ -8383,6 +8500,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Future<void> _requestNotificationPermission() async {
+    final appState = context.read<AppState>();
     final outcome = await _permissions.request(AppPermission.notifications);
     if (!mounted) return;
     setState(() {
@@ -8393,6 +8511,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     if (outcome == PermissionOutcome.permanentlyDenied ||
         outcome == PermissionOutcome.restricted) {
       await _permissions.openAppSettings();
+    }
+    if (outcome == PermissionOutcome.granted) {
+      appState.refreshFcmTokenRegistration().ignore();
     }
   }
 

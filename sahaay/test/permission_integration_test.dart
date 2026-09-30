@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:sahaay/main.dart';
 import 'package:sahaay/services/permission_service.dart';
 
@@ -194,6 +195,24 @@ void main() {
       positionReaderOverride = () async => null;
 
       expect(await readDevicePosition(), isNull);
+    });
+  });
+
+  group('FCM notification tap fallback', () {
+    test('data-only payload creates safe notification content', () {
+      final content = notificationTapContent(
+        const RemoteMessage(data: <String, dynamic>{'type': 'donation'}),
+      );
+      expect(content.title, 'SAHAAY Notification');
+      expect(content.body, 'You have a new donation update.');
+      expect(content.category, NotificationCategory.donation);
+    });
+
+    test('missing type uses a generic fallback', () {
+      const contentMessage = RemoteMessage();
+      final content = notificationTapContent(contentMessage);
+      expect(content.body, 'You have a new update.');
+      expect(content.category, NotificationCategory.system);
     });
   });
 }

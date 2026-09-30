@@ -12,6 +12,7 @@ from app.routers import (
     deliveries,
     daily_food,
     donations,
+    device_tokens,
     notifications,
     profile,
 )
@@ -58,6 +59,7 @@ app.include_router(daily_food.router, prefix="/api/v1")
 app.include_router(claims.router, prefix="/api/v1")
 app.include_router(deliveries.router, prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
+app.include_router(device_tokens.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(ai_features.router)
 

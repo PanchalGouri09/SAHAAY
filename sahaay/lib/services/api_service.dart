@@ -277,13 +277,50 @@ class ApiService {
   }
 
   /// Admin — real-time overview counters for the dashboard header cards.
-  Future<Map<String, dynamic>> getAdminSummary() =>
-      _request('GET', '/api/v1/admin/summary');
+  Future<Map<String, dynamic>> registerFcmToken(String token, String platform) async {
+    if (!isConfigured) {
+      throw const ApiException(0, 'The FastAPI backend URL is not configured.');
+    }
+    final user = _auth.currentUser;
+    final tokenStr = await user?.getIdToken();
+    if (tokenStr == null || tokenStr.isEmpty) {
+      throw const ApiException(401, 'You must be signed in to use SAHAAY.');
+    }
+    final request = http.Request('POST', Uri.parse('$_baseUrl/api/v1/device-tokens'))
+      ..headers.addAll({
+        'Authorization': 'Bearer $tokenStr',
+        'Content-Type': 'application/json',
+      })
+      ..body = jsonEncode({
+        'token': token,
+        'platform': platform,
+      });
+    final response = await _client.send(request);
+    final text = await response.stream.bytesToString();
+    dynamic decoded;
+    if (text.isNotEmpty) {
+      try {
+        decoded = jsonDecode(text);
+      } catch (_) {
+        decoded = null;
+      }
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final detail = decoded is Map<String, dynamic> ? decoded['detail'] : null;
+      throw ApiException(response.statusCode,
+          detail?.toString() ?? 'Failed to register FCM token.');
+    }
+    return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{'success': true};
+  }
 
   /// Admin — quantitative impact metrics (kg donated/redistributed, expiry,
   /// redistributions, completed deliveries).
   Future<Map<String, dynamic>> getAdminAnalytics() =>
       _request('GET', '/api/v1/admin/analytics');
+
+  /// Admin — real-time overview counters for the dashboard header cards.
+  Future<Map<String, dynamic>> getAdminSummary() =>
+      _request('GET', '/api/v1/admin/summary');
 
   /// Admin — paginated user list with an optional role filter.
   Future<Map<String, dynamic>> getAdminUsers({
