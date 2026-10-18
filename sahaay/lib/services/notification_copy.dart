@@ -1,5 +1,15 @@
 typedef NotificationCopy = ({String title, String body});
 
+const String genericNotificationFallbackBody = 'You have a new update.';
+
+String notificationFallbackBodyForType(String? type) => switch (type) {
+      'donation' ||
+      'donation_created' ||
+      'new_nearby_donation' =>
+        'You have a new donation update.',
+      _ => genericNotificationFallbackBody,
+    };
+
 final _notificationUnsafePatterns = [
   RegExp(r'\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b',
       caseSensitive: false),
@@ -26,10 +36,14 @@ final _notificationUnsafePatterns = [
   ),
 ];
 
-NotificationCopy safeNotificationCopy(String? title, String? body) {
+NotificationCopy safeNotificationCopy(
+  String? title,
+  String? body, {
+  String fallbackBody = genericNotificationFallbackBody,
+}) {
   return (
     title: _safeText(title, 'SAHAAY Notification', 120),
-    body: _safeText(body, 'You have a new update.', 500),
+    body: _safeText(body, fallbackBody, 500),
   );
 }
 

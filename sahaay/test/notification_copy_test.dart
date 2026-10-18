@@ -52,5 +52,33 @@ void main() {
         (title: 'SAHAAY Notification', body: 'You have a new update.'),
       );
     });
+
+    test('uses donation copy only for known donation notification types', () {
+      for (final type in [
+        'donation',
+        'donation_created',
+        'new_nearby_donation',
+      ]) {
+        expect(
+          safeNotificationCopy(
+            null,
+            null,
+            fallbackBody: notificationFallbackBodyForType(type),
+          ).body,
+          'You have a new donation update.',
+        );
+      }
+
+      for (final type in ['donation_claimed', 'claim', 'unknown']) {
+        expect(
+          safeNotificationCopy(
+            null,
+            null,
+            fallbackBody: notificationFallbackBodyForType(type),
+          ).body,
+          'You have a new update.',
+        );
+      }
+    });
   });
 }

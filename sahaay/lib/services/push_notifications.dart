@@ -101,6 +101,8 @@ class PushNotifications {
       final copy = safeNotificationCopy(
         notification?.title ?? message.data['title']?.toString(),
         notification?.body ?? message.data['body']?.toString(),
+        fallbackBody:
+            notificationFallbackBodyForType(message.data['type']?.toString()),
       );
       final id = message.messageId?.hashCode ??
           DateTime.now().millisecondsSinceEpoch.remainder(1 << 31);

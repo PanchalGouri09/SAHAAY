@@ -32,8 +32,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart'
-    show ValueListenable, defaultTargetPlatform, kIsWeb;
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
@@ -967,6 +966,7 @@ NotificationCategory notificationCategoryForType(String? type) {
   final copy = safeNotificationCopy(
     message.notification?.title ?? message.data['title']?.toString(),
     message.notification?.body ?? message.data['body']?.toString(),
+    fallbackBody: notificationFallbackBodyForType(type),
   );
   return (
     title: copy.title,
@@ -1577,37 +1577,6 @@ class AppState extends ChangeNotifier {
       notifications.clear();
       notifyListeners();
     }
-  }
-
-  /// Register the FCM token with the backend API.
-  /// Should be called after obtaining the FCM token.
-  Future<void> registerFcmTokenWithBackend(String token, String platform) async {
-    if (!isLoggedIn) return;
-    try {
-      await api.registerFcmToken(token, platform);
-      fcmToken = token;
-      notifyListeners();
-    } catch (_) {
-      // Push registration must not block normal app use.
-    }
-  }
-
-  Future<void> refreshFcmTokenRegistration() async {
-    if (!isLoggedIn) return;
-    try {
-      final permission = await activePermissionService()
-          .status(AppPermission.notifications);
-      if (permission != PermissionOutcome.granted &&
-          permission != PermissionOutcome.notRequired) {
-        return;
-      }
-      final token = await FirebaseMessaging.instance.getToken();
-      if (token == null || token.isEmpty) return;
-      final platform = kIsWeb ? 'web' : defaultTargetPlatform.name.toLowerCase();
-      if (const {'android', 'ios', 'web'}.contains(platform)) {
-        await registerFcmTokenWithBackend(token, platform);
-      }
-    } catch (_) {}
   }
 
   void pushNotification(
