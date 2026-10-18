@@ -1,3 +1,4 @@
+import logging
 from functools import lru_cache
 
 import firebase_admin
@@ -5,6 +6,8 @@ from firebase_admin import auth, credentials
 from fastapi import HTTPException, status
 
 from app.config import get_settings
+
+logger = logging.getLogger("sahaay.firebase_auth")
 
 
 @lru_cache
@@ -35,12 +38,29 @@ def get_firebase_app() -> firebase_admin.App:
 
 def verify_firebase_token(token: str) -> dict:
     try:
-        get_firebase_app()
-        return auth.verify_id_token(token, check_revoked=True)
+        app = get_firebase_app()
     except Exception as exc:
+        logger.error("Firebase Admin initialization failed (%s)", type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Firebase authentication service is unavailable.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    try:
+        return auth.verify_id_token(token, app=app, check_revoked=True)
+    except (auth.InvalidIdTokenError, auth.UserDisabledError) as exc:
+        logger.info("Firebase ID token rejected (%s)", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired Firebase authentication.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except Exception as exc:
+        logger.error("Firebase ID token verification failed (%s)", type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Firebase authentication service is unavailable.",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
