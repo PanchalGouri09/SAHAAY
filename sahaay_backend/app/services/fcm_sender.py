@@ -1,23 +1,7 @@
-"""Firebase Cloud Messaging push transport for SAHAAY notifications.
+"""Best-effort Firebase Cloud Messaging transport for SAHAAY notifications.
 
-This is the ONLY module that talks to Firebase Cloud Messaging. It resolves a
-user's registered device tokens from `user_device_tokens` (RLS-enabled,
-service-role only) and fans a single notification out to every device the user
-has registered.
-
-Guarantees:
-  * Best-effort: it never raises into the caller. `notification_service.notify`
-    persists the durable `notifications` row FIRST, so a push failure can never
-    lose a notification.
-  * Stale-token pruning: a token Firebase reports as unregistered is deleted
-    from the table so dead tokens do not accumulate.
-  * Server-resolved recipients only: the token set comes from the database
-    relationship (users.id -> user_device_tokens), never from a request body.
-
-The push requests a high-importance Android channel with the OS default
-notification sound and an APNs alert with sound. Actual audibility remains
-subject to OS permissions, channel settings, silent mode, and Do Not Disturb.
-The channel id must match the one registered by the Flutter client.
+Durable notification rows are written by the notification service before this
+module is called. Push failures therefore never block the underlying action.
 """
 
 from __future__ import annotations
@@ -31,10 +15,6 @@ from app import firebase_auth, supabase_client
 logger = logging.getLogger("sahaay.fcm")
 
 DEVICE_TOKENS_TABLE = "user_device_tokens"
-
-# Must match the high-importance channel the Flutter client creates. The
-# channel owns the sound/vibration, so the same channel id here is what makes
-# the alert audible on Android 8+.
 ANDROID_CHANNEL_ID = "sahaay_notifications"
 
 
@@ -81,30 +61,32 @@ def _apns_config() -> "firebase_messaging.APNSConfig":
 
 
 def send_push_notification_to_user(
-    user_id: str, title: str, body: str, data: dict | None = None
+    user_id: str,
+    title: str,
+    body: str,
+    data: dict | None = None,
 ) -> dict:
-    """Push to every device registered to `user_id`. Never raises.
-
-    Returns a summary {"sent", "failed", "invalid"} for observability.
-    """
+    """Push to every device registered to ``user_id``; never raise."""
     result = {"sent": 0, "failed": 0, "invalid": 0}
     if not user_id:
         return result
 
-    client = supabase_client.get_supabase_client()
-    tokens = _device_tokens(client, user_id)
+    try:
+        client = supabase_client.get_supabase_client()
+        tokens = _device_tokens(client, user_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Could not initialize device-token lookup: %s", exc)
+        return result
     if not tokens:
         return result
 
     try:
         app = firebase_auth.get_firebase_app()
     except Exception as exc:  # noqa: BLE001
-        # Push is optional in this build. The durable row already exists, so the
-        # app still shows the notification when it next reads the table.
         logger.info("FCM is not configured; push skipped: %s", exc)
         return result
 
-    payload = {str(k): str(v) for k, v in (data or {}).items()}
+    payload = {str(key): str(value) for key, value in (data or {}).items()}
     for row in tokens:
         token = row.get("token")
         if not token:
@@ -126,3 +108,33 @@ def send_push_notification_to_user(
             result["failed"] += 1
             logger.info("FCM send failed for user %s: %s", user_id, exc)
     return result
+
+
+def send_notification_to_ngo(
+    ngo_id: str,
+    title: str,
+    body: str,
+    data: dict | None = None,
+) -> dict:
+    """Resolve an NGO's associated user server-side before sending a push."""
+    empty_result = {"sent": 0, "failed": 0, "invalid": 0}
+    try:
+        result = (
+            supabase_client.get_supabase_client()
+            .table("ngos")
+            .select("user_id")
+            .eq("id", ngo_id)
+            .maybe_single()
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Could not resolve NGO push recipient: %s", exc)
+        return empty_result
+
+    row = getattr(result, "data", None)
+    if isinstance(row, list):
+        row = row[0] if row else None
+    user_id = row.get("user_id") if isinstance(row, dict) else None
+    if not user_id:
+        return empty_result
+    return send_push_notification_to_user(user_id, title, body, data)

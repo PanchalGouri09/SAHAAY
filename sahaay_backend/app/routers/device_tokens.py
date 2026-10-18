@@ -18,7 +18,7 @@ def register_device_token(
     payload: DeviceTokenRegister,
     profile: dict = Depends(get_current_profile),
 ) -> dict:
-    """Upsert an FCM token for the authenticated profile only."""
+    """Register an FCM token for the authenticated user's profile."""
     result = (
         get_supabase_client()
         .table("user_device_tokens")
@@ -38,7 +38,15 @@ def register_device_token(
     row = getattr(result, "data", None)
     if isinstance(row, list):
         row = row[0] if row else None
-    if not isinstance(row, dict):
+    required_fields = {
+        "id",
+        "user_id",
+        "token",
+        "platform",
+        "created_at",
+        "updated_at",
+    }
+    if not isinstance(row, dict) or not required_fields.issubset(row):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to register device token.",
@@ -50,6 +58,7 @@ def register_device_token(
 def list_device_tokens(
     profile: dict = Depends(get_current_profile),
 ) -> list[dict]:
+    """List tokens owned by the authenticated profile only."""
     result = (
         get_supabase_client()
         .table("user_device_tokens")
@@ -65,6 +74,7 @@ def remove_device_token(
     token_id: str,
     profile: dict = Depends(get_current_profile),
 ) -> Response:
+    """Delete a token only when it belongs to the authenticated profile."""
     result = (
         get_supabase_client()
         .table("user_device_tokens")

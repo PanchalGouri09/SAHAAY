@@ -1,10 +1,7 @@
--- FCM device tokens, one row per (user, device).
+-- FCM device tokens, one row per device token.
 --
--- Security posture: RLS is ENABLED with ZERO client policies. The anon and
--- authenticated Supabase keys therefore cannot read or write tokens at all;
--- only the FastAPI service role (which bypasses RLS) manages this table. Tokens
--- are never exposed to any client and never accepted from a request body as a
--- target recipient -- recipients are always resolved server-side from users.id.
+-- RLS is enabled with no client policies. Only the FastAPI service role
+-- manages these rows. User ids and push recipients are resolved server-side.
 
 create table if not exists public.user_device_tokens (
     id uuid primary key default gen_random_uuid(),
@@ -15,7 +12,13 @@ create table if not exists public.user_device_tokens (
     updated_at timestamp with time zone not null default now()
 );
 
+comment on table public.user_device_tokens is
+    'FCM/APNs tokens associated with backend-derived SAHAAY users.';
+
+comment on column public.user_device_tokens.user_id is
+    'Backend-derived users.id; never supplied as a token recipient by a client.';
+
 create index if not exists user_device_tokens_user_id_idx
     on public.user_device_tokens (user_id);
 
-alter table "public"."user_device_tokens" enable row level security;
+alter table public.user_device_tokens enable row level security;

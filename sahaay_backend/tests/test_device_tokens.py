@@ -4,6 +4,7 @@ from app.dependencies import get_current_profile
 from app.main import app
 from app.routers import device_tokens
 from app.schemas.device_token import DeviceTokenRegister
+from app.services import fcm_sender
 
 
 class _Result:
@@ -20,14 +21,16 @@ class _Query:
 
     def upsert(self, values, on_conflict):
         assert on_conflict == "token"
-        self.operation = "upsert"
-        self.values = values
+        self.operation, self.values = "upsert", values
         return self
 
     def select(self, *_):
         return self
 
     def single(self):
+        return self
+
+    def maybe_single(self):
         return self
 
     def eq(self, key, value):
@@ -57,7 +60,8 @@ class _Query:
             return _Result(dict(row))
 
         matched = [
-            row for row in rows
+            row
+            for row in rows
             if all(row.get(key) == value for key, value in self.filters.items())
         ]
         if self.operation == "delete":
@@ -81,13 +85,30 @@ def test_device_token_routes_require_authentication():
     assert response.status_code == 401
 
 
-def test_register_uses_authenticated_profile_and_upserts(monkeypatch):
+def test_generic_client_push_endpoint_is_not_exposed():
+    app.dependency_overrides[get_current_profile] = lambda: {
+        "id": "user-a",
+        "role": "ngo",
+    }
+    try:
+        response = TestClient(app).post(
+            "/api/v1/notifications/send",
+            params={"user_id": "user-b", "title": "title", "body": "body"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_current_profile, None)
+    assert response.status_code == 404
+
+
+def test_register_uses_profile_id_and_upserts(monkeypatch):
     database = _Database()
     monkeypatch.setattr(device_tokens, "get_supabase_client", lambda: database)
     profile = {"id": "user-row-id", "firebase_uid": "firebase-uid"}
-    payload = DeviceTokenRegister(token="fcm-token", platform="android")
 
-    first = device_tokens.register_device_token(payload, profile)
+    first = device_tokens.register_device_token(
+        DeviceTokenRegister(token="fcm-token", platform="android"),
+        profile,
+    )
     second = device_tokens.register_device_token(
         DeviceTokenRegister(token="fcm-token", platform="ios"),
         profile,
@@ -119,26 +140,24 @@ def test_register_endpoint_ignores_client_supplied_user_id(monkeypatch):
     assert response.json()["user_id"] == "trusted-user"
 
 
-def test_list_and_delete_are_scoped_to_authenticated_profile(monkeypatch):
+def test_invalid_platform_is_rejected():
+    app.dependency_overrides[get_current_profile] = lambda: {"id": "trusted-user"}
+    try:
+        response = TestClient(app).post(
+            "/api/v1/device-tokens",
+            json={"token": "test-token", "platform": "desktop"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_current_profile, None)
+    assert response.status_code == 422
+
+
+def test_token_list_and_delete_are_scoped_to_profile(monkeypatch):
     database = _Database()
     database.rows.extend(
         [
-            {
-                "id": "owned",
-                "user_id": "user-a",
-                "token": "token-a",
-                "platform": "android",
-                "created_at": "now",
-                "updated_at": "now",
-            },
-            {
-                "id": "other",
-                "user_id": "user-b",
-                "token": "token-b",
-                "platform": "android",
-                "created_at": "now",
-                "updated_at": "now",
-            },
+            {"id": "owned", "user_id": "user-a", "token": "a"},
+            {"id": "other", "user_id": "user-b", "token": "b"},
         ]
     )
     monkeypatch.setattr(device_tokens, "get_supabase_client", lambda: database)
@@ -154,13 +173,114 @@ def test_list_and_delete_are_scoped_to_authenticated_profile(monkeypatch):
     assert [row["id"] for row in database.rows] == ["owned", "other"]
 
 
-def test_invalid_platform_is_rejected():
-    app.dependency_overrides[get_current_profile] = lambda: {"id": "trusted-user"}
-    try:
-        response = TestClient(app).post(
-            "/api/v1/device-tokens",
-            json={"token": "test-token", "platform": "desktop"},
-        )
-    finally:
-        app.dependency_overrides.pop(get_current_profile, None)
-    assert response.status_code == 422
+class _SenderQuery:
+    def __init__(self, database):
+        self.database = database
+        self.key = None
+        self.value = None
+        self.deleting = False
+
+    def select(self, *_):
+        return self
+
+    def eq(self, key, value):
+        self.key, self.value = key, value
+        return self
+
+    def maybe_single(self):
+        return self
+
+    def delete(self):
+        self.deleting = True
+        return self
+
+    def execute(self):
+        matched = [
+            row for row in self.database.rows if row.get(self.key) == self.value
+        ]
+        if self.deleting:
+            self.database.rows[:] = [
+                row for row in self.database.rows if row not in matched
+            ]
+        return _Result([dict(row) for row in matched])
+
+
+class _SenderDatabase:
+    def __init__(self):
+        self.rows = [
+            {"user_id": "user-a", "token": "invalid-token", "platform": "android"}
+        ]
+
+    def table(self, _):
+        return _SenderQuery(self)
+
+
+def test_sender_cleans_unregistered_token_and_does_not_raise(monkeypatch):
+    from firebase_admin import messaging
+
+    database = _SenderDatabase()
+    monkeypatch.setattr("app.firebase_auth.get_firebase_app", lambda: object())
+    monkeypatch.setattr("app.supabase_client.get_supabase_client", lambda: database)
+
+    def raise_unregistered(*_args, **_kwargs):
+        raise messaging.UnregisteredError("gone")
+
+    monkeypatch.setattr(fcm_sender.firebase_messaging, "send", raise_unregistered)
+
+    result = fcm_sender.send_push_notification_to_user("user-a", "Title", "Body")
+
+    assert result["invalid"] == 1
+    assert database.rows == []
+
+
+def test_sender_isolates_transient_fcm_failure(monkeypatch):
+    database = _SenderDatabase()
+    monkeypatch.setattr("app.firebase_auth.get_firebase_app", lambda: object())
+    monkeypatch.setattr("app.supabase_client.get_supabase_client", lambda: database)
+
+    def raise_transient(*_args, **_kwargs):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(fcm_sender.firebase_messaging, "send", raise_transient)
+
+    result = fcm_sender.send_push_notification_to_user("user-a", "Title", "Body")
+
+    assert result["failed"] == 1
+    assert database.rows
+
+
+def test_ngo_push_recipient_is_resolved_from_ngo_relationship(monkeypatch):
+    class NGOQuery:
+        def select(self, *_):
+            return self
+
+        def eq(self, key, value):
+            assert key == "id"
+            assert value == "ngo-row-7"
+            return self
+
+        def maybe_single(self):
+            return self
+
+        def execute(self):
+            return _Result({"user_id": "user-row-9"})
+
+    class NGODatabase:
+        def table(self, name):
+            assert name == "ngos"
+            return NGOQuery()
+
+    sent = []
+    monkeypatch.setattr(
+        "app.supabase_client.get_supabase_client", lambda: NGODatabase()
+    )
+    monkeypatch.setattr(
+        fcm_sender,
+        "send_push_notification_to_user",
+        lambda user_id, *_args, **_kwargs: sent.append(user_id) or {"sent": 1},
+    )
+
+    result = fcm_sender.send_notification_to_ngo("ngo-row-7", "title", "body")
+
+    assert result == {"sent": 1}
+    assert sent == ["user-row-9"]

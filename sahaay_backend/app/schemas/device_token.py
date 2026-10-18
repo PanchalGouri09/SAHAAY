@@ -4,13 +4,23 @@ from pydantic import BaseModel, Field
 
 
 class DeviceTokenRegister(BaseModel):
-    """An FCM token registered for the authenticated user's device."""
+    """Token and platform submitted for the authenticated user's device."""
 
-    token: str = Field(min_length=1, max_length=4096)
-    platform: Literal["android", "ios", "web"]
+    token: str = Field(
+        ...,
+        min_length=1,
+        max_length=4096,
+        description="The FCM registration token or APNs device token.",
+    )
+    platform: Literal["android", "ios", "web"] = Field(
+        ...,
+        description="The platform: 'android', 'ios', or 'web'.",
+    )
 
 
 class DeviceTokenResponse(BaseModel):
+    """Device-token row returned by authenticated token-management routes."""
+
     id: str
     user_id: str
     token: str
