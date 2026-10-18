@@ -1,6 +1,7 @@
 import logging
 from functools import lru_cache
 
+from google.auth import exceptions as google_auth_exceptions
 import firebase_admin
 from firebase_admin import auth, credentials
 from fastapi import HTTPException, status
@@ -8,6 +9,28 @@ from fastapi import HTTPException, status
 from app.config import get_settings
 
 logger = logging.getLogger("sahaay.firebase_auth")
+
+
+def _safe_verification_diagnostic(exc: Exception) -> str:
+    if not isinstance(exc, google_auth_exceptions.RefreshError):
+        return "details redacted"
+
+    message = " ".join(str(argument) for argument in exc.args).lower()
+    if "invalid_grant" in message:
+        return "credential refresh rejected (invalid_grant)"
+    if "invalid_client" in message:
+        return "credential refresh rejected (invalid_client)"
+    if "unauthorized_client" in message:
+        return "credential refresh rejected (unauthorized_client)"
+    if "invalid_scope" in message:
+        return "credential refresh rejected (invalid_scope)"
+    if "invalid jwt signature" in message or "invalid_jwt" in message:
+        return "credential assertion rejected (invalid JWT/signature)"
+    if "timed out" in message or "timeout" in message:
+        return "credential refresh timed out"
+    if "connection" in message or "name resolution" in message:
+        return "credential refresh connection failure"
+    return "credential refresh failed (details redacted)"
 
 
 @lru_cache
@@ -57,7 +80,12 @@ def verify_firebase_token(token: str) -> dict:
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
     except Exception as exc:
-        logger.error("Firebase ID token verification failed (%s)", type(exc).__name__)
+        diagnostic = _safe_verification_diagnostic(exc)
+        logger.error(
+            "Firebase ID token verification failed (%s; %s)",
+            type(exc).__name__,
+            diagnostic,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Firebase authentication service is unavailable.",

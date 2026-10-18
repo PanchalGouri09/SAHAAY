@@ -3,6 +3,7 @@ from unittest.mock import Mock
 import pytest
 from firebase_admin import auth
 from fastapi import HTTPException
+from google.auth.exceptions import RefreshError
 
 from app import firebase_auth
 
@@ -76,3 +77,48 @@ def test_firebase_verification_service_error_is_unavailable(monkeypatch) -> None
 
     assert error.value.status_code == 503
     assert error.value.detail == "Firebase authentication service is unavailable."
+
+
+def test_refresh_error_logs_safe_reason_without_credentials_or_tokens(
+    monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(firebase_auth, "get_firebase_app", lambda: object())
+    private_key = "-----BEGIN PRIVATE KEY-----sensitive-key-data"
+    service_email = "firebase-admin@example.invalid"
+    bearer_token = "eyJhbGciOiJIUzI1NiJ9.secret.payload"
+    error = RefreshError(
+        "invalid_grant: Invalid JWT Signature. "
+        f"{private_key} {service_email} Bearer {bearer_token}"
+    )
+    monkeypatch.setattr(
+        firebase_auth.auth,
+        "verify_id_token",
+        Mock(side_effect=error),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        firebase_auth.verify_firebase_token("client-id-token")
+
+    assert raised.value.status_code == 503
+    assert "RefreshError" in caplog.text
+    assert "invalid_grant" in caplog.text
+    assert private_key not in caplog.text
+    assert service_email not in caplog.text
+    assert bearer_token not in caplog.text
+
+
+def test_unknown_refresh_error_logs_only_redacted_diagnostic(
+    monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(firebase_auth, "get_firebase_app", lambda: object())
+    monkeypatch.setattr(
+        firebase_auth.auth,
+        "verify_id_token",
+        Mock(side_effect=RefreshError("provider response contains sensitive data")),
+    )
+
+    with pytest.raises(HTTPException):
+        firebase_auth.verify_firebase_token("client-id-token")
+
+    assert "credential refresh failed (details redacted)" in caplog.text
+    assert "provider response contains sensitive data" not in caplog.text
