@@ -1,11 +1,151 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.dependencies import require_role
+from app.dependencies import get_current_firebase_user, require_role
 from app.schemas.donation import DeliveryStatusUpdate
+from app.services import notification_service
 from app.services.volunteer_transport import first_row, is_live_claim_status
+from app.services.profile_completion import require_verified_contacts
 from app.supabase_client import get_supabase_client
 
 router = APIRouter(prefix="/deliveries", tags=["deliveries"])
+logger = logging.getLogger(__name__)
+
+
+def _enrich_delivery_rows(client, deliveries: list[dict]) -> list[dict]:
+    if not deliveries:
+        return []
+    claim_ids = sorted({str(row["claim_id"]) for row in deliveries if row.get("claim_id")})
+    claims = (
+        client.table("claims")
+        .select("id,ngo_id,requested_quantity,status")
+        .in_("id", claim_ids)
+        .execute()
+        .data
+        or []
+    ) if claim_ids else []
+    claim_by_id = {str(row["id"]): row for row in claims}
+    donation_ids = sorted({
+        str(row["donation_id"]) for row in deliveries if row.get("donation_id")
+    })
+    donations = (
+        client.table("donations")
+        .select("*")
+        .in_("id", donation_ids)
+        .execute()
+        .data
+        or []
+    ) if donation_ids else []
+    donation_by_id = {str(row["id"]): row for row in donations}
+    provider_ids = sorted({
+        str(row["provider_id"])
+        for row in donations
+        if row.get("provider_id")
+    })
+    providers = (
+        client.table("providers")
+        .select("id,organization_name,address,city,phone,latitude,longitude")
+        .in_("id", provider_ids)
+        .execute()
+        .data
+        or []
+    ) if provider_ids else []
+    provider_by_id = {str(row["id"]): row for row in providers}
+    ngo_ids = sorted({
+        str(claim_by_id[str(row["claim_id"])]["ngo_id"])
+        for row in deliveries
+        if claim_by_id.get(str(row.get("claim_id")), {}).get("ngo_id")
+    })
+    ngos = (
+        client.table("ngos")
+        .select("id,organization_name,address,city,phone,latitude,longitude")
+        .in_("id", ngo_ids)
+        .execute()
+        .data
+        or []
+    ) if ngo_ids else []
+    ngo_by_id = {str(row["id"]): row for row in ngos}
+    volunteer_ids = sorted({
+        str(row["volunteer_id"])
+        for row in deliveries
+        if row.get("volunteer_id")
+    })
+    volunteer_by_id: dict[str, dict] = {}
+    if volunteer_ids:
+        volunteer_rows = (
+            client.table("volunteers")
+            .select("id,user_id")
+            .in_("id", volunteer_ids)
+            .execute()
+            .data
+            or []
+        )
+        user_ids = sorted({
+            str(row["user_id"]) for row in volunteer_rows if row.get("user_id")
+        })
+        users = (
+            client.table("users")
+            .select("id,full_name,phone")
+            .in_("id", user_ids)
+            .execute()
+            .data
+            or []
+        ) if user_ids else []
+        user_by_id = {str(row["id"]): row for row in users}
+        volunteer_by_id = {
+            str(row["id"]): dict(user_by_id.get(str(row.get("user_id")), {}))
+            for row in volunteer_rows
+        }
+    coordination_by_id: dict[str, dict] = {}
+    if claim_ids:
+        try:
+            rows = (
+                client.table("claim_transport_coordination")
+                .select("*")
+                .in_("claim_id", claim_ids)
+                .execute()
+                .data
+                or []
+            )
+            coordination_by_id = {
+                str(row["claim_id"]): row
+                for row in rows
+                if row.get("claim_id")
+            }
+        except Exception as exc:
+            # Existing delivery details remain available if the additive
+            # coordination migration has not been deployed yet.
+            logger.info(
+                "Transport coordination enrichment unavailable (%s)",
+                type(exc).__name__,
+            )
+            coordination_by_id = {}
+
+    return [
+        {
+            **delivery,
+            "donation": donation_by_id.get(str(delivery.get("donation_id"))),
+            "provider": provider_by_id.get(
+                str(
+                    donation_by_id.get(str(delivery.get("donation_id")), {}).get(
+                        "provider_id"
+                    )
+                )
+            ),
+            "ngo": ngo_by_id.get(
+                str(
+                    claim_by_id.get(str(delivery.get("claim_id")), {}).get("ngo_id")
+                )
+            ),
+            "claim": claim_by_id.get(str(delivery.get("claim_id"))),
+            "volunteer": volunteer_by_id.get(str(delivery.get("volunteer_id"))),
+            "transport_coordination": coordination_by_id.get(
+                str(delivery.get("claim_id"))
+            ),
+        }
+        for delivery in deliveries
+    ]
 
 
 @router.get("")
@@ -20,8 +160,9 @@ def list_deliveries(profile: dict = Depends(require_role("volunteer"))) -> list[
     if not volunteer:
         raise HTTPException(status_code=404, detail="Volunteer profile not found.")
     volunteer_id = volunteer["id"]
-    response = get_supabase_client().table("deliveries").select("*").eq("volunteer_id", volunteer_id).order("created_at", desc=True).execute()
-    return response.data or []
+    client = get_supabase_client()
+    response = client.table("deliveries").select("*").eq("volunteer_id", volunteer_id).order("created_at", desc=True).execute()
+    return _enrich_delivery_rows(client, response.data or [])
 
 
 @router.get("/transport-required")
@@ -30,10 +171,10 @@ def list_transport_required(
 ) -> list[dict]:
     """Open volunteer transport tasks that nobody has accepted yet.
 
-    These are donations where the provider and the claiming NGO both reported no
-    vehicle, so `deliveries.status = 'unassigned'` and `volunteer_id IS NULL`.
-    Listing them here is what makes them *discoverable*; nothing is assigned by
-    this endpoint and no volunteer is invented.
+    These are donations where the provider and the claiming NGO both explicitly
+    declined transport, so the persisted coordination state is
+    `searching_for_volunteers`, `deliveries.status = 'unassigned'`, and
+    `volunteer_id IS NULL`.
 
     A task is discoverable only while BOTH the delivery is still `unassigned` AND
     the underlying claim is still live (`pending`/`accepted`/`completed`). A task
@@ -96,73 +237,57 @@ def list_transport_required(
     if not tasks:
         return []
 
-    donation_ids = sorted({str(t["donation_id"]) for t in tasks if t.get("donation_id")})
-    donations = (
-        client.table("donations")
-        .select(
-            "id,food_name,quantity,unit,servings,veg_type,pickup_address,"
-            "latitude,longitude,pickup_deadline,expiry_time,status,"
-            "volunteer_transport_required,provider_id"
+    coordination_available = True
+    try:
+        coordination_rows = (
+            client.table("claim_transport_coordination")
+            .select("*")
+            .in_("claim_id", list(claim_by_id))
+            .execute()
+            .data
+            or []
         )
-        .in_("id", donation_ids)
-        .execute()
-        .data
-        or []
-    )
-    donation_by_id = {str(d["id"]): d for d in donations}
-
-    provider_ids = sorted({str(d["provider_id"]) for d in donations if d.get("provider_id")})
-    providers = (
-        client.table("providers")
-        .select("id,organization_name,address,city,phone,vehicle_available")
-        .in_("id", provider_ids)
-        .execute()
-        .data
-        or []
-    ) if provider_ids else []
-    provider_by_id = {str(p["id"]): p for p in providers}
-
-    ngo_ids = sorted(
-        {
-            str(claim_by_id[str(t["claim_id"])]["ngo_id"])
-            for t in tasks
-            if claim_by_id.get(str(t.get("claim_id")), {}).get("ngo_id")
+        coordination_by_id = {
+            str(row["claim_id"]): row
+            for row in coordination_rows
+            if row.get("claim_id")
         }
-    )
-    ngos = (
-        client.table("ngos")
-        .select("id,organization_name,address,city,phone,vehicle_available")
-        .in_("id", ngo_ids)
-        .execute()
-        .data
-        or []
-    ) if ngo_ids else []
-    ngo_by_id = {str(n["id"]): n for n in ngos}
-
-    enriched = []
-    for task in tasks:
-        donation = donation_by_id.get(str(task.get("donation_id")), {})
-        claim = claim_by_id.get(str(task.get("claim_id")), {})
-        provider = provider_by_id.get(str(donation.get("provider_id")), {})
-        ngo = ngo_by_id.get(str(claim.get("ngo_id")), {})
-        enriched.append(
-            {
-                **task,
-                "volunteer_transport_required": True,
-                "transport_requirement": "Volunteer transport required",
-                "donation": donation or None,
-                "provider": provider or None,
-                "ngo": ngo or None,
-                "claim": claim or None,
-            }
+    except Exception as exc:
+        logger.info(
+            "Transport coordination task filter unavailable (%s)",
+            type(exc).__name__,
         )
-    return enriched
+        coordination_available = False
+        coordination_by_id = {}
+    if coordination_available:
+        tasks = [
+            task
+            for task in tasks
+            if coordination_by_id.get(str(task.get("claim_id")), {}).get("status")
+            == "searching_for_volunteers"
+        ]
+    if not tasks:
+        return []
+
+    enriched = _enrich_delivery_rows(client, tasks)
+    return [
+        {
+            **task,
+            "volunteer_transport_required": True,
+            "transport_requirement": "Volunteer transport required",
+            "transport_coordination": coordination_by_id.get(
+                str(task.get("claim_id"))
+            ),
+        }
+        for task in enriched
+    ]
 
 
 @router.post("/{delivery_id}/accept")
 def accept_delivery(
     delivery_id: str,
     profile: dict = Depends(require_role("volunteer")),
+    firebase_user: dict = Depends(get_current_firebase_user),
 ) -> dict:
     """A real volunteer accepts an open transport task.
 
@@ -178,6 +303,9 @@ def accept_delivery(
     accept it afterwards and be handed work for a withdrawn offer. The claim is
     therefore resolved from the database here, never from the request.
     """
+    require_verified_contacts(
+        profile, firebase_user, action="accepting a volunteer transport task"
+    )
     volunteer = first_row(profile.get("volunteers"))
     if not volunteer:
         raise HTTPException(status_code=404, detail="Volunteer profile not found.")
@@ -185,7 +313,7 @@ def accept_delivery(
 
     existing = (
         client.table("deliveries")
-        .select("id,claim_id,status,volunteer_id")
+        .select("id,donation_id,claim_id,status,volunteer_id")
         .eq("id", delivery_id)
         .maybe_single()
         .execute()
@@ -206,44 +334,97 @@ def accept_delivery(
 
     _reject_if_claim_not_live(client, existing.data)
 
-    # The assignment itself is still a single conditional UPDATE, so two
-    # volunteers racing for the same task cannot both win: only the update that
-    # observes volunteer_id IS NULL changes the row.
-    updated = (
-        client.table("deliveries")
-        .update({"volunteer_id": volunteer["id"], "status": "assigned"})
-        .eq("id", delivery_id)
-        .is_("volunteer_id", None)
-        .select()
-        .execute()
-    )
-    if not updated.data:
-        # Lost the race against a concurrent accept.
-        raise HTTPException(
-            status_code=409,
-            detail="This transport task has already been accepted by another volunteer.",
+    coordination_schema_available = True
+    try:
+        coordination_response = (
+            client.table("claim_transport_coordination")
+            .select("id,status")
+            .eq("claim_id", str(existing.data.get("claim_id")))
+            .maybe_single()
+            .execute()
         )
+    except Exception as exc:
+        # Compatibility with the existing delivery workflow before the
+        # additive coordination migration is applied.
+        logger.info(
+            "Transport coordination migration unavailable for assignment (%s)",
+            type(exc).__name__,
+        )
+        coordination_schema_available = False
 
-    # The claim lives in a different table, so its status cannot be part of that
-    # single conditional UPDATE. Close the remaining window (claim cancelled
-    # between the check above and the update) by re-reading it and undoing the
-    # assignment if the claim went dead in the meantime. This is deliberately
-    # small and needs no transaction: the undo is itself guarded on
-    # volunteer_id = this volunteer, so it can only ever reverse THIS
-    # assignment and can never disturb a volunteer who took the task
-    # independently.
-    if not _claim_is_live(client, existing.data.get("claim_id")):
-        client.table("deliveries").update(
-            {"volunteer_id": None, "status": original_status}
-        ).eq("id", delivery_id).eq("volunteer_id", volunteer["id"]).execute()
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "This transport task is no longer available: the NGO has "
-                "cancelled or rejected the underlying claim. Nothing was changed."
-            ),
+    if coordination_schema_available:
+        coordination = getattr(coordination_response, "data", None)
+        if not coordination or coordination.get("status") != "searching_for_volunteers":
+            raise HTTPException(
+                status_code=409,
+                detail="This transport task is no longer searching for volunteers.",
+            )
+        try:
+            result = client.rpc(
+                "confirm_claim_volunteer_assignment",
+                {
+                    "p_delivery_id": str(delivery_id),
+                    "p_volunteer_id": str(volunteer["id"]),
+                },
+            ).execute()
+        except Exception as exc:
+            logger.warning(
+                "Atomic volunteer assignment failed (%s)", type(exc).__name__
+            )
+            message = str(exc).lower()
+            if "already been accepted" in message or "search is not open" in message:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This transport task has already been accepted or closed.",
+                ) from exc
+            raise HTTPException(
+                status_code=503,
+                detail="Could not assign this transport task. Please retry.",
+            ) from exc
+        result_data = getattr(result, "data", None)
+        if isinstance(result_data, list) and len(result_data) == 1:
+            result_data = result_data[0]
+        updated_data = result_data.get("delivery") if isinstance(result_data, dict) else None
+        if not isinstance(updated_data, dict):
+            raise HTTPException(
+                status_code=502,
+                detail="The database returned an invalid volunteer assignment.",
+            )
+    else:
+        # Legacy deployments retain the original single conditional UPDATE.
+        updated = (
+            client.table("deliveries")
+            .update({"volunteer_id": volunteer["id"], "status": "assigned"})
+            .eq("id", delivery_id)
+            .is_("volunteer_id", None)
+            .select()
+            .execute()
         )
-    return updated.data[0]
+        if not updated.data:
+            raise HTTPException(
+                status_code=409,
+                detail="This transport task has already been accepted by another volunteer.",
+            )
+        if not _claim_is_live(client, existing.data.get("claim_id")):
+            client.table("deliveries").update(
+                {"volunteer_id": None, "status": original_status}
+            ).eq("id", delivery_id).eq("volunteer_id", volunteer["id"]).execute()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This transport task is no longer available: the NGO has "
+                    "cancelled or rejected the underlying claim. Nothing was changed."
+                ),
+            )
+        updated_data = updated.data[0]
+
+    # The assignment really happened: tell the claiming NGO and the provider.
+    # Recipients are resolved from the delivery's own relationships, never from
+    # the request, and the push is best-effort.
+    notification_service.volunteer_transport_assigned(
+        client, delivery=updated_data, claim=None, donation=None
+    )
+    return updated_data
 
 
 def _claim_is_live(client, claim_id) -> bool:
@@ -298,4 +479,36 @@ def update_delivery(
     response = client.table("deliveries").update(values).eq("id", delivery_id).eq("volunteer_id", volunteer_id).select().execute()
     if not response.data:
         raise HTTPException(status_code=404, detail="Delivery not found.")
-    return response.data[0]
+    delivery = response.data[0]
+    if values.get("status") == "delivered":
+        # The database trigger has completed the donation; generate its
+        # acknowledgment receipt best-effort (never breaks this update).
+        _generate_completion_receipt(client, delivery.get("donation_id"))
+    # Tell the parties whose delivery actually moved. Recipients come from the
+    # delivery's own relationships (claiming NGO, provider); best-effort.
+    notification_service.delivery_status_changed(
+        client,
+        delivery=delivery,
+        new_status=values.get("status"),
+        failure_reason=values.get("failure_reason"),
+    )
+    return delivery
+
+
+def _generate_completion_receipt(client, donation_id) -> None:
+    """Best-effort acknowledgment generation after a delivery completes.
+
+    Runs only after the database trigger has flipped the donation to
+    'completed'. Imports are lazy so the router import graph stays acyclic, and
+    the acknowledgment service itself never raises, so a broken PDF pipeline
+    can never fail the delivery update that completed the donation.
+    """
+    if not donation_id:
+        return
+    from app.services import acknowledgment, notification_service
+
+    outcome = acknowledgment.auto_generate_acknowledgment(client, donation_id)
+    if outcome and outcome.get("persisted"):
+        notification_service.acknowledgment_ready(
+            client, donation=outcome.get("donation")
+        )

@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 
 from app.dependencies import get_current_profile
 from app.main import app
+from app.services import donation_offers as offer_service
 from app.services.ai_client import AIClient, get_ai_client
 
 client_session = TestClient(app)
@@ -250,6 +251,16 @@ class _AIHandler:
 @pytest.fixture
 def ctx(monkeypatch: pytest.MonkeyPatch):
     fake = _FakeSupabase()
+
+    def persist(_client, *, donation_id, ranked_ngos):
+        candidates = offer_service._ranked_candidate_rows(ranked_ngos)
+        fake.seed(
+            "donation_match_candidates",
+            [{**candidate, "donation_id": donation_id} for candidate in candidates],
+        )
+        return {"status": "offered"}
+
+    monkeypatch.setattr(offer_service, "persist_ranked_candidates", persist)
     monkeypatch.setattr("app.routers.ai_features.get_supabase_client", lambda: fake)
     monkeypatch.setattr("app.routers.donations.get_supabase_client", lambda: fake)
     ai = _AIHandler()
@@ -268,10 +279,11 @@ def _seed_donation(fake, **overrides) -> dict:
         "id": "don-1",
         "provider_id": _PROVIDER_ID,
         "food_name": "Vegetable Rice",
+        "food_category": "Cooked Meals",
         "quantity": 10.0,
         "unit": "kg",
         "veg_type": "vegetarian",
-        "pickup_deadline": "2026-09-30T18:30:00+00:00",
+        "pickup_deadline": "2026-09-30T13:00:00+00:00",
         "prepared_at": "2026-09-29T12:00:00+00:00",
         "status": "available",
         "latitude": 18.52,
@@ -283,18 +295,35 @@ def _seed_donation(fake, **overrides) -> dict:
 
 
 def _seed_ngo(fake, ngo_id: str, *, with_hours: bool = True, **overrides) -> dict:
+    user_id = f"user-{ngo_id}"
     row = {
         "id": ngo_id,
+        "user_id": user_id,
         "organization_name": f"NGO {ngo_id}",
+        "address": "1 Market Road",
+        "city": "Pune",
         "latitude": 18.53,
         "longitude": 73.86,
         "food_capacity": 50.0,
-        "preferred_food_types": ["vegetarian", "vegan"],
+        "max_capacity_kg": 50.0,
+        # Food categories (SAHAAY vocabulary) are separate from dietary prefs.
+        "preferred_food_types": ["Cooked Meals"],
+        "dietary_preferences": ["vegetarian", "vegan"],
         "verified": True,
     }
     if with_hours:
         row.update({"available_from": "07:00", "available_to": "22:00"})
     row.update(overrides)
+    fake.seed(
+        "users",
+        [{
+            "id": user_id,
+            "role": "ngo",
+            "full_name": f"Contact {ngo_id}",
+            "email": f"{ngo_id}@example.org",
+            "phone": "+91 9876543210",
+        }],
+    )
     fake.seed("ngos", [row])
     return row
 
@@ -347,7 +376,19 @@ def test_match_insufficient_data_without_ngo_operating_hours(ctx) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "insufficient_data"
-    assert "hours" in body["reason"]
+    assert "completed NGO profiles" in body["reason"]
+    assert "/api/v1/matching/rank-ngos" not in ctx.ai.paths_hit
+
+
+def test_match_with_no_completed_ngo_profiles_returns_no_candidates(ctx) -> None:
+    _seed_donation(ctx.fake)
+
+    response = client_session.post("/api/v1/donations/don-1/match")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "no_candidates"
+    assert "completed NGO profiles" in body["reason"]
     assert "/api/v1/matching/rank-ngos" not in ctx.ai.paths_hit
 
 

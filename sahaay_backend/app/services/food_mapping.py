@@ -36,6 +36,9 @@ FoodCategoryAliases = {
     "packaged food": "packaged",
     "packaged": "packaged",
     "dairy": "dairy",
+    # "Other" is deliberately kept distinct; it is never guessed to be raw,
+    # cooked, or packaged food.
+    "other": "other",
 }
 
 

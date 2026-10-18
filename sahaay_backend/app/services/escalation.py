@@ -28,6 +28,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.schemas.ai import EscalationCheckRequest
+from app.services import notification_service
 from app.services.volunteer_transport import recompute_volunteer_transport_required
 
 _NO_CLAIMS_MESSAGE = (
@@ -211,6 +212,15 @@ def assess_donation_escalation(
         # introducing a scheduler of its own.
         if getattr(rejected, "data", None):
             recompute_volunteer_transport_required(client, donation_id)
+            # Only a rejection that actually changed a row tells the NGO its
+            # claim was rejected; a keep_waiting decision or an already-rejected
+            # claim notifies nobody.
+            notification_service.claim_escalation_rejected(
+                client,
+                donation=donation,
+                claim=current_claim,
+                reason=result.message,
+            )
     return response
 
 

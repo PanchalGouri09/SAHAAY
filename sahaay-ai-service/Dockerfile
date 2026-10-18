@@ -1,7 +1,6 @@
 # SAHAAY - AI & Smart Features Service
 # Build:  docker build -t sahaay-ai-service .
-# Run:    docker run -p 8000:8000 sahaay-ai-service
-# Then open: http://127.0.0.1:8000/docs
+# Run:    docker run -p 8001:8001 -e PORT=8001 sahaay-ai-service
 
 FROM python:3.11-slim
 
@@ -23,6 +22,6 @@ COPY . .
 # starts ready to serve predictions immediately (no first-request delay)
 RUN python -m app.ml.train_model
 
-EXPOSE 8000
+EXPOSE 8001
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8001}"]

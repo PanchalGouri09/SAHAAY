@@ -106,6 +106,47 @@ def _attached_prediction(entry: dict) -> dict:
     }
 
 
+def _prediction_request_for(entry: dict) -> tuple[SurplusPredictionRequest | None, str | None]:
+    """Build a retry request only from the entry's persisted observations."""
+    if (
+        entry.get("food_prepared_kg") is None
+        or entry.get("food_sold_kg") is None
+        or entry.get("entry_date") is None
+    ):
+        return None, (
+            "This saved food entry is missing required prepared/sold amounts or "
+            "its date, so no AI prediction can be generated."
+        )
+
+    category = map_food_category(str(entry.get("food_category") or ""))
+    if category is None:
+        return None, (
+            "This saved food entry has an unsupported or missing category, so "
+            "no AI prediction can be generated."
+        )
+    if category == "other":
+        return None, (
+            "No historical surplus model is trained for the Other category; "
+            "the entry was saved without an estimated prediction."
+        )
+
+    try:
+        entry_date = date.fromisoformat(str(entry["entry_date"])[:10])
+        request = SurplusPredictionRequest(
+            food_prepared_kg=float(entry["food_prepared_kg"]),
+            food_sold_kg=float(entry["food_sold_kg"]),
+            food_category=category,
+            day_of_week=entry_date.strftime("%A"),
+            date=entry_date,
+        )
+    except (KeyError, TypeError, ValueError, ValidationError):
+        return None, (
+            "This saved food entry has incomplete or invalid prediction inputs; "
+            "no AI prediction was generated."
+        )
+    return request, None
+
+
 def _predict_and_link(
     ai_client: AIClient, provider_id: str, entry: dict
 ) -> tuple[dict, dict]:
@@ -116,14 +157,10 @@ def _predict_and_link(
     prediction is reported as skipped so the UI can show a clear error state
     instead of losing the provider's real data.
     """
-    entry_date = date.fromisoformat(str(entry["entry_date"])[:10])
-    request = SurplusPredictionRequest(
-        food_prepared_kg=float(entry["food_prepared_kg"]),
-        food_sold_kg=float(entry["food_sold_kg"]),
-        food_category=map_food_category(entry["food_category"]),
-        day_of_week=entry_date.strftime("%A"),
-        date=entry_date,
-    )
+    request, reason = _prediction_request_for(entry)
+    if request is None:
+        return entry, {"status": "unavailable", "reason": reason}
+
     try:
         result = ai_client.predict_surplus(request)
     except (AIServiceHTTPError, AIServiceUnavailableError) as exc:
@@ -254,6 +291,24 @@ def get_today_daily_food_entry(
         "data": entry,
         "prediction": _attached_prediction(entry),
     }
+
+
+@router.post("/today/prediction/refresh")
+def refresh_today_daily_food_prediction(
+    profile: dict = Depends(require_role("provider")),
+    ai_client: AIClient = Depends(get_ai_client),
+) -> dict:
+    """Retry today's prediction using only the provider's persisted entry."""
+    provider_id = _provider_id_of(profile)
+    entry = _entry_on(provider_id, date.today())
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Today's daily food entry is not available to refresh.",
+        )
+
+    entry, prediction = _predict_and_link(ai_client, provider_id, entry)
+    return {**entry, "prediction": prediction}
 
 
 @router.get("/history")

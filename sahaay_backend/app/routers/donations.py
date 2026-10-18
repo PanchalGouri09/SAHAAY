@@ -17,6 +17,7 @@ The AI is never bypassed for safety; if the AI service is unavailable or
 returns a malformed response, the request fails with a controlled 5xx error.
 """
 
+import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -24,9 +25,14 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import ValidationError
 
 from app.config import get_settings
-from app.dependencies import get_current_profile, require_role
+from app.dependencies import get_current_firebase_user, get_current_profile, require_role
 from app.schemas.ai import SafetyCheckRequest, SurplusPredictionRequest
-from app.schemas.donation import DonationCreate, DonationUpdate, FoodImageUploadResponse
+from app.schemas.donation import (
+    DonationCreate,
+    DonationMatchingDetailsUpdate,
+    DonationUpdate,
+    FoodImageUploadResponse,
+)
 from app.services.ai_client import (
     AIClient,
     AIServiceHTTPError,
@@ -34,10 +40,16 @@ from app.services.ai_client import (
     get_ai_client,
 )
 from app.services.food_mapping import map_food_category, map_veg_type_to_ai
+from app.services import notification_service
+from app.services.donation_offers import auto_start_offers_for_donation
+from app.services.profile_completion import (
+    require_complete_profile,
+)
 from app.services.predictions import insert_prediction, prediction_payload
 from app.supabase_client import get_supabase_client
 
 router = APIRouter(prefix="/donations", tags=["donations"])
+logger = logging.getLogger("sahaay.donations")
 
 # Field consumed by the AI pipeline but deliberately not persisted: the safety
 # service needs the storage condition, yet it is not a donations column.
@@ -102,6 +114,11 @@ def _maybe_predict_surplus(
     has_sold = payload.food_sold_kg is not None
     if not has_prepared and not has_sold:
         return None
+    if ai_category == "other":
+        return {
+            "status": "skipped",
+            "reason": "No historical surplus model is trained for the Other category.",
+        }
 
     # (Both-or-neither and sold <= prepared are enforced by the DonationCreate
     # schema before any persistence happens, so no re-check is needed here.)
@@ -140,6 +157,7 @@ def create_donation(
     profile: dict = Depends(require_role("provider")),
     ai_client: AIClient = Depends(get_ai_client),
 ) -> dict:
+    require_complete_profile(profile, action="creating a donation")
     provider_id = _provider_id_of(profile)
 
     # Optional AI surplus prediction must never invent input values: it runs
@@ -197,10 +215,103 @@ def create_donation(
         .data[0]
     )
 
+    # A donation that was really persisted is a real business event: notify the
+    # verified NGOs in the provider's own city (the recipient list is derived
+    # server-side from `ngos.city`/`providers.city`, never from the request).
+    # Best-effort: the helper never raises, so it cannot fail the creation.
+    provider = profile.get("providers")
+    provider_row = provider[0] if isinstance(provider, list) else provider
+    notification_service.donation_created(
+        get_supabase_client(), donation=donation, provider_row=provider_row
+    )
+
+    # Matching reuses the existing eligibility filters and AI ranking. Offer
+    # setup is best-effort so an unavailable ranking service cannot undo an
+    # already-persisted donation; a later retry can safely start the sequence.
+    try:
+        matching = auto_start_offers_for_donation(
+            get_supabase_client(),
+            donation=donation,
+            profile=profile,
+            ai_client=ai_client,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not start ranked offers error_type=%s",
+            type(exc).__name__,
+        )
+        matching = {
+            "status": "error",
+            "reason": "Automatic matching could not be started; it will be retried.",
+        }
+
     prediction = _maybe_predict_surplus(
         ai_client, provider_id, payload, ai_category, donation
     )
-    return {**donation, "prediction": prediction}
+    return {**donation, "prediction": prediction, "matching": matching}
+
+
+@router.patch("/{donation_id}/matching-details")
+def update_donation_matching_details(
+    donation_id: str,
+    payload: DonationMatchingDetailsUpdate,
+    profile: dict = Depends(require_role("provider")),
+) -> dict:
+    """Save an explicitly chosen dietary type and retry the ranked offers."""
+    provider_id = _provider_id_of(profile)
+    client = get_supabase_client()
+    existing = (
+        client.table("donations")
+        .select("id,provider_id,status")
+        .eq("id", donation_id)
+        .maybe_single()
+        .execute()
+    )
+    donation = getattr(existing, "data", None)
+    if not donation:
+        raise HTTPException(status_code=404, detail="Donation not found.")
+    if str(donation.get("provider_id")) != provider_id:
+        raise HTTPException(status_code=403, detail="Donation does not belong to this provider.")
+    if donation.get("status") != "available":
+        raise HTTPException(
+            status_code=409,
+            detail="Only an available donation can have matching details updated.",
+        )
+
+    updated = (
+        client.table("donations")
+        .update({"veg_type": payload.veg_type})
+        .eq("id", donation_id)
+        .eq("provider_id", provider_id)
+        .eq("status", "available")
+        .select("*")
+        .execute()
+        .data
+        or []
+    )
+    if not updated:
+        raise HTTPException(
+            status_code=409,
+            detail="The donation changed while matching details were being updated. Refresh and retry.",
+        )
+    updated_donation = updated[0]
+    try:
+        matching = auto_start_offers_for_donation(
+            client,
+            donation=updated_donation,
+            profile=profile,
+            ai_client=get_ai_client(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not retry matching after donation detail update error_type=%s",
+            type(exc).__name__,
+        )
+        matching = {
+            "status": "error",
+            "reason": "Matching could not be refreshed; use Refresh matching to retry.",
+        }
+    return {**updated_donation, "matching": matching}
 
 
 # MIME/extension lookup used only when byte-sniffing is inconclusive (e.g.
@@ -260,6 +371,8 @@ def upload_donation_image(
     file: UploadFile = File(...),
     profile: dict = Depends(require_role("provider")),
 ) -> FoodImageUploadResponse:
+    # Uploading a photo is scoped to an authenticated provider profile. Trusted
+    # contact verification remains enforced when the donation itself is created.
     provider_id = _provider_id_of(profile)
 
     data = file.file.read()
@@ -323,15 +436,55 @@ def list_donations(profile: dict = Depends(get_current_profile)) -> list[dict]:
             .order("created_at", desc=True)
             .execute()
         )
-    else:
-        response = (
-            client.table("donations")
-            .select("*")
-            .eq("status", "available")
-            .gt("expiry_time", datetime.now(timezone.utc).isoformat())
-            .order("created_at", desc=True)
-            .execute()
+        donations = response.data or []
+        prediction_ids = list(
+            dict.fromkeys(
+                str(donation["prediction_id"])
+                for donation in donations
+                if donation.get("prediction_id")
+            )
         )
+        if prediction_ids:
+            prediction_rows = (
+                client.table("food_predictions")
+                .select(
+                    "id,predicted_surplus,planned_quantity,recommendation,"
+                    "prediction_date,model_version,confidence_score,surplus_probability"
+                )
+                .in_("id", prediction_ids)
+                .execute()
+                .data
+                or []
+            )
+            predictions_by_id = {
+                str(prediction["id"]): prediction for prediction in prediction_rows
+            }
+            donations = [
+                {
+                    **donation,
+                    "surplus_prediction": predictions_by_id.get(
+                        str(donation.get("prediction_id"))
+                    ),
+                }
+                for donation in donations
+            ]
+        # The provider's own dashboard shows the organisation profile; attach it
+        # so the client does not need a second round-trip. Best-effort only.
+        provider_row = (
+            client.table("providers").select("*").eq("id", provider_id).maybe_single().execute()
+        )
+        organisation = getattr(provider_row, "data", None)
+        if organisation:
+            donations = [{**d, "provider": organisation} for d in donations]
+        return donations
+    response = (
+        client.table("donations")
+        .select("*")
+        .eq("status", "available")
+        .gt("expiry_time", datetime.now(timezone.utc).isoformat())
+        .order("created_at", desc=True)
+        .execute()
+    )
     return response.data or []
 
 

@@ -45,3 +45,22 @@ def require_role(role: str) -> Callable:
         return profile
 
     return dependency
+
+
+def require_any_role(*roles: str) -> Callable:
+    """Like require_role, but admits any of several roles.
+
+    Used where an action is legitimately performed by more than one party
+    (e.g. handover verification, which either the donating provider or the
+    receiving NGO may confirm). The route itself must still scope the data to
+    the caller's own organisation.
+    """
+
+    allowed = set(roles)
+
+    def dependency(profile: dict = Depends(get_current_profile)) -> dict:
+        if profile.get("role") not in allowed:
+            raise HTTPException(status_code=403, detail="Insufficient role for this operation.")
+        return profile
+
+    return dependency

@@ -24,6 +24,12 @@ def test_health_check():
     assert response.json()["status"] == "ok"
 
 
+def test_ai_service_does_not_enable_browser_cors():
+    response = client.get("/health", headers={"Origin": "https://untrusted.example"})
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
+
+
 def test_predict_surplus():
     payload = {
         "food_prepared_kg": 50,
@@ -105,7 +111,11 @@ def test_escalation_timeout_escalates():
     old_time = (datetime.utcnow() - timedelta(minutes=30)).isoformat()
     payload = {
         "donation_id": "DON001",
-        "ranked_ngo_ids": ["NGO001", "NGO002", "NGO003"],
+        "ranked_ngo_ids": [
+            "NGO001",
+            "8f347ca2-70f9-4c01-aeb3-2099302c1183",
+            "NGO003",
+        ],
         "current_ngo_index": 0,
         "current_ngo_status": "pending",
         "offer_sent_at": old_time,
@@ -115,7 +125,11 @@ def test_escalation_timeout_escalates():
     assert response.status_code == 200
     data = response.json()
     assert data["action"] == "escalate"
-    assert data["next_ngo_id"] == "NGO002"
+    assert data["next_ngo_id"] == "8f347ca2-70f9-4c01-aeb3-2099302c1183"
+    assert "8f347ca2-70f9-4c01-aeb3-2099302c1183" not in data["message"]
+    assert data["message"] == (
+        "The current NGO timed out. The offer can now move to the next eligible NGO."
+    )
 
 
 def test_reliability_score():

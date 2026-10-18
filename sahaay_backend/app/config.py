@@ -12,13 +12,18 @@ class Settings(BaseSettings):
     firebase_project_id: str = Field(default="", validation_alias="FIREBASE_PROJECT_ID")
     firebase_client_email: str = Field(default="", validation_alias="FIREBASE_CLIENT_EMAIL")
     firebase_private_key: str = Field(default="", validation_alias="FIREBASE_PRIVATE_KEY")
+    firebase_phone_auth_enabled: bool = Field(
+        default=False, validation_alias="FIREBASE_PHONE_AUTH_ENABLED"
+    )
     cors_origins: str = Field(default="http://localhost:3000,http://localhost:5000", validation_alias="CORS_ORIGINS")
     ai_service_url: str = Field(default="http://127.0.0.1:8001", validation_alias="AI_SERVICE_URL")
     ai_request_timeout_seconds: float = Field(default=15.0, validation_alias="AI_REQUEST_TIMEOUT_SECONDS")
+    ai_match_request_timeout_seconds: float = Field(default=60.0, gt=0, validation_alias="AI_MATCH_REQUEST_TIMEOUT_SECONDS")
     supabase_storage_bucket: str = Field(default="donations", validation_alias="SUPABASE_STORAGE_BUCKET")
     max_food_photo_size_mb: int = Field(default=5, validation_alias="MAX_FOOD_PHOTO_SIZE_MB")
     escalation_scheduler_enabled: bool = Field(default=True, validation_alias="ESCALATION_SCHEDULER_ENABLED")
     escalation_scheduler_interval_seconds: int = Field(default=60, validation_alias="ESCALATION_SCHEDULER_INTERVAL_SECONDS")
+    donation_offer_scheduler_enabled: bool = Field(default=True, validation_alias="DONATION_OFFER_SCHEDULER_ENABLED")
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -12,7 +12,7 @@ remains the single source of truth for all data; it calls this
 service's APIs with the relevant data and gets back predictions,
 scores, or generated files.
 
-**Base URL (development):** `http://<ai-service-host>:8000`
+**Base URL (development):** `http://<ai-service-host>:8001`
 **All endpoints are prefixed with:** `/api/v1/...`
 **Content type:** `application/json` for all requests except the PDF
 download endpoint, which returns `application/pdf`.
@@ -151,10 +151,10 @@ same reverse proxy that authenticates the main backend.
 
 ## 6. Deployment note
 
-For local development, both the main backend and this AI service can
-run on the same machine on different ports (e.g. backend on `:5000`,
-this service on `:8000`). For production, this service can be
-containerized (add a `Dockerfile` running
-`uvicorn app.main:app --host 0.0.0.0 --port 8000`) and deployed
-separately, with the main backend calling it over an internal network
-URL or a public URL if hosted separately.
+The AI service has a Dockerfile and exposes `GET /health`. It does not
+implement authentication, so deploy it on a private/internal network and
+configure the main backend's `AI_SERVICE_URL` to its internal address. The
+container listens on the platform `PORT` (default `8001`). Do not expose this
+service publicly without adding an authenticated gateway. The default public
+OSRM demo server is suitable only for development/demo traffic; production
+deployments should use an operator-managed routing endpoint.

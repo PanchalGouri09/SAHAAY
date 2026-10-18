@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-FoodCategory = Literal["cooked", "bakery", "dairy", "packaged", "raw"]
+FoodCategory = Literal["cooked", "bakery", "dairy", "packaged", "raw", "other"]
 DietaryType = Literal["veg", "non_veg", "vegan", "any"]
 EscalationStatus = Literal["pending", "accepted", "rejected", "timed_out"]
 SafetyVerdict = Literal["Eligible", "Not Eligible", "Requires Manual Review"]
@@ -70,15 +70,15 @@ class MatchRequest(BaseModel):
 class NGOScoreBreakdown(BaseModel):
     ngo_id: str
     ngo_name: str
-    distance_km: float
-    distance_source: str
-    distance_score: float
-    quantity_fit_score: float
-    dietary_compatibility_score: float
-    pickup_time_feasibility_score: float
-    restaurant_reliability_score: float
-    final_score: float
-    rank: int
+    distance_km: float = Field(ge=0)
+    distance_source: Literal["road", "straight_line"]
+    distance_score: float = Field(ge=0, le=100)
+    quantity_fit_score: float = Field(ge=0, le=100)
+    dietary_compatibility_score: float = Field(ge=0, le=100)
+    pickup_time_feasibility_score: float = Field(ge=0, le=100)
+    restaurant_reliability_score: float = Field(ge=0, le=100)
+    final_score: float = Field(ge=0, le=100)
+    rank: int = Field(ge=1)
 
 
 class MatchResponse(BaseModel):
@@ -145,6 +145,31 @@ class DonationAcknowledgmentRequest(BaseModel):
     quantity_kg: float
     donation_datetime: datetime
     completion_status: str
+
+    # Extended, real-only facts. Every one is optional: anything the database
+    # cannot supply is sent as null and rendered by the AI service as
+    # "Not available" rather than invented.
+    unit: str | None = None
+    quantity_label: str | None = None
+    servings: int | None = None
+    order_id: str | None = None
+    posted_at: datetime | None = None
+    claimed_at: datetime | None = None
+    picked_up_at: datetime | None = None
+    received_at: datetime | None = None
+    impact_points: int | None = None
+    handover_verified_at: datetime | None = None
+    handover_photo_url: str | None = None
+    delivered_at: datetime | None = None
+    meals_rescued: int | None = None
+    food_weight_kg: float | None = None
+    estimated_co2_saved: float | None = None
+    volunteer_transport_used: bool | None = None
+    volunteer_name: str | None = None
+    completed_at: datetime | None = None
+    handover_status: str | None = None
+    volunteer_role: str | None = None
+    ngo_receipt_confirmed: bool | None = None
 
 
 class DonationAcknowledgmentResponse(BaseModel):

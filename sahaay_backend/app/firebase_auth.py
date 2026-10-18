@@ -43,3 +43,25 @@ def verify_firebase_token(token: str) -> dict:
             detail="Invalid or expired Firebase authentication.",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+
+
+def firebase_user_exists(uid: str) -> bool:
+    """Whether `uid` still maps to a live Firebase Authentication user.
+
+    Used to tell a genuinely active account apart from an *orphaned* SAHAAY
+    row whose Firebase user was deleted. Only an explicit ``UserNotFoundError``
+    is treated as "gone"; if liveness cannot be determined (Admin unavailable
+    or a transient error) this stays conservative and reports ``True`` so the
+    caller never re-links over a possibly-active account.
+    """
+    try:
+        get_firebase_app()
+    except Exception:  # noqa: BLE001 - misconfigured Admin -> treat as active
+        return True
+    try:
+        auth.get_user(uid)
+        return True
+    except auth.UserNotFoundError:
+        return False
+    except Exception:  # noqa: BLE001 - unknown failure -> treat as active
+        return True

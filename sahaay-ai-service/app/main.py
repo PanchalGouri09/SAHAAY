@@ -3,14 +3,13 @@ SAHAAY – AI & Smart Features Service
 Entry point for the FastAPI application.
 
 Run with:
-    uvicorn app.main:app --reload --port 8000
+    uvicorn app.main:app --reload --port 8001
 
 Interactive API docs will be available at:
-    http://127.0.0.1:8000/docs
+    http://127.0.0.1:8001/docs
 """
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import (
     donation_router,
@@ -31,17 +30,6 @@ app = FastAPI(
         "verification, and PDF donation acknowledgments."
     ),
     version="1.0.0",
-)
-
-# Allow the Flutter app / main backend (running on a different host/port)
-# to call this service directly during development.
-# TODO: restrict allow_origins to the actual backend/app domains before production deployment.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 app.include_router(prediction_router.router)

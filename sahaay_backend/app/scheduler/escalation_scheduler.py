@@ -63,7 +63,10 @@ class EscalationScheduler:
             try:
                 self._sweep(get_supabase_client(), get_ai_client())
             except Exception as exc:  # noqa: BLE001
-                logger.exception("Immediate escalation sweep failed: %s", exc)
+                logger.error(
+                    "Immediate escalation sweep failed (error_type=%s)",
+                    type(exc).__name__,
+                )
         self._task = asyncio.create_task(self._run(), name="escalation-scheduler")
         self._started_on = "lifespan"
         logger.info("Escalation scheduler started (interval=%ss)", self._interval)
@@ -79,8 +82,11 @@ class EscalationScheduler:
             await asyncio.wait_for(asyncio.shield(task), timeout=10.0)
         except asyncio.TimeoutError:
             task.cancel()
-        except Exception:  # noqa: BLE001
-            logger.exception("Escalation scheduler shutdown error")
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Escalation scheduler shutdown error (error_type=%s)",
+                type(exc).__name__,
+            )
         logger.info("Escalation scheduler stopped.")
 
     async def _run(self) -> None:
@@ -103,7 +109,10 @@ class EscalationScheduler:
             )
             return outcome
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Escalation sweep failed: %s", exc)
+            logger.error(
+                "Escalation sweep failed (error_type=%s)",
+                type(exc).__name__,
+            )
             return {"checked": 0, "escalated": 0, "results": []}
 
 

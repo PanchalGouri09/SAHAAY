@@ -29,8 +29,10 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.dependencies import get_current_profile
+from app.config import Settings
+from app.dependencies import get_current_firebase_user, get_current_profile
 from app.main import app
+from app.services import donation_offers as offer_service
 from app.services.ai_client import AIClient, get_ai_client
 
 client_session = TestClient(app)
@@ -42,10 +44,15 @@ def _provider_profile() -> dict:
     return {
         "id": "user-FAKE-001",
         "role": "provider",
+        "full_name": "Test Provider",
+        "email": "provider@example.org",
+        "phone": "+91 9876543210",
         "providers": [
             {
                 "id": _PROVIDER_ID,
                 "organization_name": "Tasty Kitchen",
+                "address": "1 Market Road",
+                "city": "Pune",
                 "latitude": 18.52,
                 "longitude": 73.85,
             }
@@ -119,6 +126,19 @@ class _FakeSupabase:
 
     def seed(self, name: str, rows: list[dict]) -> None:
         self.tables.setdefault(name, []).extend(list(rows))
+        if name == "ngos":
+            users = self.tables.setdefault("users", [])
+            users.extend(
+                {
+                    "id": row["user_id"],
+                    "role": "ngo",
+                    "full_name": "Test NGO Contact",
+                    "email": f"{row['user_id']}@example.org",
+                    "phone": "+91 9876543210",
+                }
+                for row in rows
+                if row.get("user_id")
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -210,9 +230,29 @@ class _AIHandler:
 @pytest.fixture
 def ctx(monkeypatch: pytest.MonkeyPatch):
     fake = _FakeSupabase()
+
+    def persist(_client, *, donation_id, ranked_ngos):
+        candidates = offer_service._ranked_candidate_rows(ranked_ngos)
+        fake.seed(
+            "donation_match_candidates",
+            [{**candidate, "donation_id": donation_id} for candidate in candidates],
+        )
+        return {"status": "offered"}
+
+    monkeypatch.setattr(offer_service, "persist_ranked_candidates", persist)
     monkeypatch.setattr("app.routers.ai_features.get_supabase_client", lambda: fake)
     ai = _AIHandler()
     app.dependency_overrides[get_current_profile] = lambda: _provider_profile()
+    app.dependency_overrides[get_current_firebase_user] = lambda: {
+        "uid": "provider-test-uid",
+        "email": "provider@example.org",
+        "email_verified": True,
+        "phone_number": "+919876543210",
+    }
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: Settings(firebase_phone_auth_enabled=True),
+    )
     app.dependency_overrides[get_ai_client] = lambda: AIClient(
         base_url="http://ai.test",
         timeout=5.0,
@@ -228,10 +268,11 @@ def _donation(**overrides) -> dict:
         "id": "don-1",
         "provider_id": _PROVIDER_ID,
         "food_name": "Vegetable Rice",
+        "food_category": "Cooked Meals",
         "quantity": 10.0,
         "unit": "kg",
         "veg_type": "vegetarian",
-        "pickup_deadline": "2026-09-30T18:30:00+00:00",
+        "pickup_deadline": "2026-09-30T13:00:00+00:00",
         "prepared_at": "2026-09-29T12:00:00+00:00",
         "status": "available",
         "expiry_time": future,
@@ -245,6 +286,7 @@ def _donation(**overrides) -> dict:
 def _ngo(ngo_id: str = "ngo-1", **overrides) -> dict:
     row = {
         "id": ngo_id,
+        "user_id": f"user-{ngo_id}",
         "organization_name": f"NGO {ngo_id}",
         "city": "Pune",
         "address": "12 NGO Road",
@@ -252,7 +294,10 @@ def _ngo(ngo_id: str = "ngo-1", **overrides) -> dict:
         "latitude": 18.53,
         "longitude": 73.86,
         "food_capacity": 50,
-        "preferred_food_types": ["vegetarian", "vegan"],
+        "max_capacity_kg": 50,
+        # Food categories (SAHAAY vocabulary) are separate from dietary prefs.
+        "preferred_food_types": ["Cooked Meals"],
+        "dietary_preferences": ["vegetarian"],
         "verified": True,
         "available_from": "07:00",
         "available_to": "22:00",
@@ -495,6 +540,16 @@ def create_ctx(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("app.routers.donations.get_supabase_client", lambda: fake)
     ai = _create_ai_handler()
     app.dependency_overrides[get_current_profile] = lambda: _provider_profile()
+    app.dependency_overrides[get_current_firebase_user] = lambda: {
+        "uid": "provider-test-uid",
+        "email": "provider@example.org",
+        "email_verified": True,
+        "phone_number": "+919876543210",
+    }
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: Settings(firebase_phone_auth_enabled=True),
+    )
     app.dependency_overrides[get_ai_client] = lambda: AIClient(
         base_url="http://ai.test",
         timeout=5.0,

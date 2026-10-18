@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 DonationStatus = Literal[
     "available",
@@ -39,7 +39,7 @@ class DonationCreate(BaseModel):
     quantity: float = Field(gt=0)
     unit: str = "servings"
     servings: int | None = Field(default=None, ge=0)
-    veg_type: VegType | None = None
+    veg_type: VegType
     description: str | None = None
     # A provider may NOT create a donation without a food photo: the image is
     # uploaded through POST /api/v1/donations/upload first and its returned
@@ -97,10 +97,50 @@ class DonationUpdate(BaseModel):
     status: DonationStatus | None = None
 
 
+class DonationMatchingDetailsUpdate(BaseModel):
+    veg_type: VegType
+
+
 class ClaimCreate(BaseModel):
     donation_id: UUID
     requested_quantity: float = Field(gt=0)
     notes: str | None = None
+
+
+class TransportCoordinationResponse(BaseModel):
+    response: Literal["yes", "no"]
+    captain_name: str | None = None
+    captain_phone: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_captain(self) -> "TransportCoordinationResponse":
+        if self.response == "yes":
+            name = (self.captain_name or "").strip()
+            from app.services.phone_number import normalize_indian_mobile_number
+
+            phone = normalize_indian_mobile_number(self.captain_phone)
+            if not name or phone is None:
+                raise ValueError(
+                    "A captain name and valid Indian mobile number are required when answering yes."
+                )
+            self.captain_name = name
+            self.captain_phone = phone
+        return self
+
+
+class HandoverVerifyRequest(BaseModel):
+    # The 4-digit code is validated by the backend against the stored,
+    # salted-per-claim SHA-256 hash. A blank/whitespace-only body is a client
+    # error (422), never a silent mismatch.
+    code: str = Field(min_length=1)
+
+    @field_validator("code")
+    @classmethod
+    def _non_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("handover code must not be blank")
+        return stripped
 
 
 class DeliveryStatusUpdate(BaseModel):

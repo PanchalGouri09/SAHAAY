@@ -3,11 +3,31 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.services.phone_number import normalize_indian_mobile_number
+
 Role = Literal["provider", "ngo", "volunteer", "admin"]
 
 # 24-hour "HH:MM" — the format the AI service stores in NGOInput.
 # Matches the ngos.available_from / available_to check constraints.
 _HOUR_PATTERN = r"^([01][0-9]|2[0-3]):[0-5][0-9]$"
+DietaryPreference = Literal[
+    "vegetarian",
+    "non_vegetarian",
+    "vegan",
+    "mixed",
+    "any",
+]
+
+
+def _normalize_optional_phone(value):
+    if value is None:
+        return None
+    normalized = normalize_indian_mobile_number(value)
+    if normalized is None:
+        raise ValueError(
+            "phone must be a valid 10-digit Indian mobile number."
+        )
+    return normalized
 
 
 class ProviderProfileCreate(BaseModel):
@@ -22,6 +42,11 @@ class ProviderProfileCreate(BaseModel):
     # Three-state, identical in meaning to ngos.vehicle_available:
     # true = has a vehicle, false = explicitly none, null = not answered yet.
     vehicle_available: bool | None = None
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def _validate_phone(cls, value):
+        return _normalize_optional_phone(value)
 
 
 class ProviderProfileUpdate(BaseModel):
@@ -47,22 +72,43 @@ class NgoProfileCreate(BaseModel):
     phone: str | None = None
     address: str
     city: str = "Pune"
-    latitude: float | None = None
-    longitude: float | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
     food_capacity: int | None = Field(default=None, ge=0)
-    preferred_food_types: list[str] | None = None
+    max_capacity_kg: float | None = Field(default=None, gt=0)
+    preferred_food_types: list[str] | None = Field(default=None, min_length=1)
+    dietary_preferences: list[DietaryPreference] | None = Field(
+        default=None, min_length=1
+    )
     available_from: str | None = Field(default=None, pattern=_HOUR_PATTERN)
     available_to: str | None = Field(default=None, pattern=_HOUR_PATTERN)
     # Three-state: true = has a vehicle, false = explicitly none,
     # null (default) = the NGO has not answered yet. See the migration.
     vehicle_available: bool | None = None
 
+    @field_validator("phone", mode="before")
+    @classmethod
+    def _validate_phone(cls, value):
+        return _normalize_optional_phone(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_client_verification_status(cls, value):
+        if isinstance(value, dict) and {"verified", "demo_verified"} & value.keys():
+            raise ValueError("NGO verification status is assigned by the server.")
+        return value
+
     @model_validator(mode="after")
-    def _hours_must_be_a_pair(self):
+    def _matching_fields_must_be_complete_pairs(self):
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("latitude and longitude must be set together.")
         if (self.available_from is None) != (self.available_to is None):
-            raise ValueError(
-                "available_from and available_to must be set together or both left empty."
-            )
+            raise ValueError("available_from and available_to must be set together.")
+        if (
+            self.available_from is not None
+            and self.available_from == self.available_to
+        ):
+            raise ValueError("available_from and available_to must be different.")
         return self
 
 
@@ -80,26 +126,47 @@ class NgoProfileUpdate(BaseModel):
     phone: str | None = None
     address: str | None = None
     city: str | None = None
-    latitude: float | None = None
-    longitude: float | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
     food_capacity: int | None = Field(default=None, ge=0)
-    preferred_food_types: list[str] | None = None
+    max_capacity_kg: float | None = Field(default=None, gt=0)
+    preferred_food_types: list[str] | None = Field(default=None, min_length=1)
+    dietary_preferences: list[DietaryPreference] | None = Field(
+        default=None, min_length=1
+    )
     available_from: str | None = Field(default=None, pattern=_HOUR_PATTERN)
     available_to: str | None = Field(default=None, pattern=_HOUR_PATTERN)
     vehicle_available: bool | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_client_verification_status(cls, value):
+        if isinstance(value, dict) and {"verified", "demo_verified"} & value.keys():
+            raise ValueError("NGO verification status is assigned by the server.")
+        return value
+
     @model_validator(mode="after")
     def _hours_must_be_a_pair_if_given(self):
-        # Only enforce pairing when at least one hour is actually supplied;
-        # a patch that touches neither must not be forced to clear both.
-        if self.available_from is None and self.available_to is None:
-            return self
-        if (self.available_from is None) != (self.available_to is None):
-            raise ValueError(
-                "available_from and available_to must be set together or both left empty."
-            )
+        fields_set = self.model_fields_set
+        if bool({"available_from", "available_to"} & fields_set):
+            if not {"available_from", "available_to"} <= fields_set:
+                raise ValueError(
+                    "available_from and available_to must be set together."
+                )
+            if (
+                self.available_from is not None
+                and self.available_to is not None
+                and self.available_from == self.available_to
+            ):
+                raise ValueError(
+                    "available_from and available_to must be different."
+                )
+        if bool({"latitude", "longitude"} & fields_set) and not {
+            "latitude",
+            "longitude",
+        } <= fields_set:
+            raise ValueError("latitude and longitude must be set together.")
         return self
-
 
 
 class VolunteerProfileCreate(BaseModel):
@@ -117,6 +184,11 @@ class ProfileCreate(BaseModel):
     provider: ProviderProfileCreate | None = None
     ngo: NgoProfileCreate | None = None
     volunteer: VolunteerProfileCreate | None = None
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def _validate_phone(cls, value):
+        return _normalize_optional_phone(value)
 
 
 class ProfileResponse(BaseModel):
@@ -136,6 +208,26 @@ class ProfileUpdate(BaseModel):
     provider: ProviderProfileUpdate | None = None
     ngo: NgoProfileUpdate | None = None
     volunteer: VolunteerProfileCreate | None = None
+
+
+class LeaderboardVisibilityUpdate(BaseModel):
+    """Body for PATCH /api/v1/profile/leaderboard-visibility.
+
+    A plain boolean: true shows the signed-in organization on the public
+    leaderboard, false hides it (matching the `leaderboard_public` column
+    default). This is not tri-state - the setting is always either on or off.
+    """
+
+    public: bool
+
+    @field_validator("public", mode="before")
+    @classmethod
+    def _reject_non_boolean(cls, value):
+        # Only a real JSON boolean is accepted; loose clients sending
+        # "yes"/"true"/1 are rejected rather than silently coerced.
+        if isinstance(value, bool):
+            return value
+        raise ValueError("public must be true or false.")
 
 
 class VehicleAvailabilityUpdate(BaseModel):

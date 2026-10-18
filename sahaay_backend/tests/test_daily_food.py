@@ -481,16 +481,20 @@ def test_invalid_category_is_rejected_before_ai(fake_supabase) -> None:
     assert calls == []  # the AI service is never called for an unmappable category
 
 
-def test_other_category_is_rejected_because_ai_cannot_map_it(fake_supabase) -> None:
-    """'Other' has no AI mapping, so it is rejected rather than guessed."""
-    _install_ai()
+def test_other_category_is_saved_without_an_untrained_prediction(fake_supabase) -> None:
+    """Other is valid input but must not get a guessed model prediction."""
+    calls: list[dict] = []
+    _install_ai(calls=calls)
 
     response = client_session.post(
         "/api/v1/daily-food", json=_body(food_category="Other")
     )
 
-    assert response.status_code == 422
-    assert not _entries(fake_supabase)
+    assert response.status_code == 200
+    assert len(_entries(fake_supabase)) == 1
+    assert response.json()["prediction"]["status"] == "unavailable"
+    assert "Other category" in response.json()["prediction"]["reason"]
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -672,6 +676,76 @@ def test_get_today_reports_a_failed_prediction_without_raising(fake_supabase) ->
     body = response.json()
     assert body["entry_required"] is False
     assert body["prediction"]["status"] == "unavailable"
+
+
+def test_refresh_retries_from_saved_inputs_and_persists_prediction(fake_supabase) -> None:
+    _install_ai(fail=True)
+    created = client_session.post("/api/v1/daily-food", json=_body())
+    assert created.status_code == 200
+    assert created.json()["prediction"]["status"] == "skipped"
+    assert _entries(fake_supabase)[0]["prediction_id"] is None
+
+    calls: list[dict] = []
+    _install_ai(calls=calls)
+    response = client_session.post(
+        "/api/v1/daily-food/today/prediction/refresh"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["prediction"]["status"] == "saved"
+    assert body["prediction_id"] == "pred-1"
+    assert calls == [
+        {
+            "food_prepared_kg": 50.0,
+            "food_sold_kg": 38.0,
+            "food_category": "cooked",
+            "day_of_week": date.today().strftime("%A"),
+            "date": TODAY,
+        }
+    ]
+    assert _entries(fake_supabase)[0]["prediction_id"] == "pred-1"
+
+    fetched = client_session.get("/api/v1/daily-food/today")
+    assert fetched.status_code == 200
+    assert fetched.json()["prediction"]["status"] == "saved"
+    assert fetched.json()["prediction"]["predicted_surplus_kg"] == 12.5
+
+
+def test_refresh_does_not_forecast_when_saved_inputs_are_missing(fake_supabase) -> None:
+    fake_supabase.seed(
+        "daily_food_entries",
+        [
+            {
+                "id": "entry-without-observations",
+                "provider_id": "provider-FAKE-001",
+                "entry_date": TODAY,
+                "food_category": "Cooked Meals",
+            }
+        ],
+    )
+    calls: list[dict] = []
+    _install_ai(calls=calls)
+
+    response = client_session.post(
+        "/api/v1/daily-food/today/prediction/refresh"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["prediction"]["status"] == "unavailable"
+    assert "missing required prepared/sold amounts" in response.json()["prediction"]["reason"]
+    assert calls == []
+    assert not fake_supabase.store.get("food_predictions")
+
+
+def test_refresh_without_today_entry_returns_not_found(fake_supabase) -> None:
+    _install_ai()
+
+    response = client_session.post(
+        "/api/v1/daily-food/today/prediction/refresh"
+    )
+
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------

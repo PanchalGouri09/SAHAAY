@@ -26,7 +26,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.dependencies import get_current_profile
+from app.dependencies import get_current_firebase_user, get_current_profile
+from app.config import Settings
 from app.services.ai_client import AIClient, get_ai_client
 
 client_session = TestClient(app)
@@ -185,7 +186,19 @@ def _provider_profile() -> dict:
     return {
         "id": "user-FAKE-001",
         "role": "provider",
-        "providers": [{"id": "provider-FAKE-001"}],
+        "full_name": "Test Provider",
+        "email": "provider@example.org",
+        "phone": "+91 9876543210",
+        "providers": [
+            {
+                "id": "provider-FAKE-001",
+                "organization_name": "Test Kitchen",
+                "address": "1 Market Road",
+                "city": "Pune",
+                "latitude": 18.52,
+                "longitude": 73.85,
+            }
+        ],
     }
 
 
@@ -224,6 +237,17 @@ def fake_supabase(monkeypatch: pytest.MonkeyPatch) -> _FakeSupabase:
         "app.routers.donations.get_supabase_client", lambda: fake
     )
     app.dependency_overrides[get_current_profile] = lambda: _provider_profile()
+    app.dependency_overrides[get_current_firebase_user] = lambda: {
+        "uid": "provider-test-uid",
+        "email": "provider@example.org",
+        "email_verified": True,
+        "phone_number": "+919876543210",
+        "firebase": {"identities": {"phone": ["+919876543210"]}},
+    }
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: Settings(firebase_phone_auth_enabled=True),
+    )
     yield fake
     app.dependency_overrides.clear()
 
@@ -251,6 +275,72 @@ def test_eligible_donation_calls_safety_and_is_created(fake_supabase) -> None:
     assert response.json()["id"] == "don-row-1"
     assert response.json()["provider_id"] == "provider-FAKE-001"
     _assert_created_in_donations(fake_supabase)
+
+
+def test_donation_without_food_type_is_rejected_before_any_external_work(
+    fake_supabase,
+):
+    response = client_session.post(
+        "/api/v1/donations",
+        json={key: value for key, value in _base_donation().items() if key != "veg_type"},
+    )
+
+    assert response.status_code == 422
+    _assert_no_donations_insert(fake_supabase)
+
+
+def test_provider_can_create_donation_without_phone_ownership_claim(fake_supabase):
+    _install_ai(_make_ai_transport("Eligible"))
+    photo = client_session.post(
+        "/api/v1/donations/upload",
+        files={"file": ("meal.png", b"fake-image-bytes", "image/png")},
+    )
+    assert photo.status_code == 200, photo.text
+    app.dependency_overrides[get_current_firebase_user] = lambda: {
+        "uid": "provider-test-uid",
+        "email_verified": False,
+        "phone_number": None,
+        "firebase": {"identities": {}},
+    }
+    payload = _base_donation(
+        food_name="Photo-backed rice",
+        quantity=12.5,
+        latitude=18.5204,
+        longitude=73.8567,
+        food_image_url=photo.json()["food_image_url"],
+    )
+
+    response = client_session.post("/api/v1/donations", json=payload)
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["food_name"] == "Photo-backed rice"
+    assert result["quantity"] == 12.5
+    assert result["latitude"] == 18.5204
+    assert result["longitude"] == 73.8567
+    assert result["food_image_url"] == payload["food_image_url"]
+    _assert_created_in_donations(fake_supabase)
+    assert len([op for op in fake_supabase.log if op[0] == "storage.upload"]) == 1
+
+
+def test_real_coordinates_are_persisted_and_returned(fake_supabase) -> None:
+    _install_ai(_make_ai_transport("Eligible"))
+
+    response = client_session.post(
+        "/api/v1/donations",
+        json=_base_donation(latitude=18.5204, longitude=73.8567),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["latitude"] == 18.5204
+    assert response.json()["longitude"] == 73.8567
+    inserts = [
+        operation
+        for operation in fake_supabase.log
+        if operation[0] == "insert" and operation[1] == "donations"
+    ]
+    assert inserts[0][2]["latitude"] == 18.5204
+    assert inserts[0][2]["longitude"] == 73.8567
 
 
 def test_not_eligible_is_rejected_and_not_created(fake_supabase) -> None:
@@ -446,6 +536,7 @@ def test_non_provider_cannot_create_donation(fake_supabase) -> None:
     response = client_session.post("/api/v1/donations", json=_base_donation())
 
     assert response.status_code == 403
+    assert response.json()["detail"] == "Insufficient role for this operation."
     _assert_no_donations_insert(fake_supabase)
 
 
@@ -460,7 +551,7 @@ def test_food_category_mapping_explicit() -> None:
         "Fruits": "raw",
         "Vegetables": "raw",
         "Packaged Food": "packaged",
-        "Other": None,
+        "Other": "other",
     }
     for source, expected in cases.items():
         assert map_food_category(source) == expected, source
@@ -483,6 +574,26 @@ def test_food_photo_upload_returns_public_url(fake_supabase) -> None:
     uploads = [op for op in fake_supabase.log if op[0] == "storage.upload"]
     assert len(uploads) == 1
     assert uploads[0][2] == len(b"fake-image-bytes")
+
+
+def test_authorized_provider_can_upload_without_phone_ownership_auth(fake_supabase):
+    app.dependency_overrides[get_current_firebase_user] = lambda: {
+        "uid": "provider-test-uid",
+        "email": "provider@example.org",
+        "email_verified": True,
+        "phone_number": None,
+    }
+
+    response = client_session.post(
+        "/api/v1/donations/upload",
+        files={"file": ("photo.jpg", b"fake-image-bytes", "image/jpeg")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["food_image_url"].startswith(
+        "https://project.supabase.co/storage/v1/object/public/donations/"
+        "food-photos/provider-FAKE-001/"
+    )
 
 
 def test_food_photo_upload_creates_bucket_when_missing(fake_supabase) -> None:

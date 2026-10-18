@@ -20,8 +20,18 @@ from app.services.ai_client import (
 )
 
 
-def make_client(handler: object) -> AIClient:
-    return AIClient(base_url="http://ai.test", transport=httpx.MockTransport(handler))
+def make_client(
+    handler: object,
+    *,
+    timeout: float | None = None,
+    match_timeout: float | None = None,
+) -> AIClient:
+    return AIClient(
+        base_url="http://ai.test",
+        timeout=timeout,
+        match_timeout=match_timeout,
+        transport=httpx.MockTransport(handler),
+    )
 
 
 def test_client_returns_typed_models() -> None:
@@ -227,6 +237,67 @@ def test_rank_ngos_returns_match_response() -> None:
     assert result.ranked_ngos[0].ngo_id == "NGO2"
     assert result.ranked_ngos[0].rank == 1
     assert result.ranked_ngos[0].distance_source == "road"
+
+
+def test_rank_ngos_uses_matching_specific_timeout() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["timeout"] = request.extensions["timeout"]["read"]
+        return httpx.Response(
+            200,
+            json={
+                "donation_id": "DON1",
+                "ranked_ngos": [],
+                "weights_used": {},
+            },
+        )
+
+    client = make_client(handler, timeout=15, match_timeout=60)
+    result = client.rank_ngos(
+        MatchRequest(
+            donation={
+                "donation_id": "DON1",
+                "restaurant_id": "REST1",
+                "restaurant_latitude": 18.5,
+                "restaurant_longitude": 73.8,
+                "quantity_kg": 10,
+                "dietary_type": "veg",
+                "pickup_time": "18:00",
+                "restaurant_reliability_score": 85,
+            },
+            candidate_ngos=[],
+        )
+    )
+
+    assert captured["timeout"] == 60
+    assert result.ranked_ngos == []
+
+
+def test_rank_ngos_timeout_maps_to_service_unavailable(caplog) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("upstream took too long")
+
+    client = make_client(handler, timeout=15, match_timeout=60)
+    payload = MatchRequest(
+        donation={
+            "donation_id": "DON1",
+            "restaurant_id": "REST1",
+            "restaurant_latitude": 18.5,
+            "restaurant_longitude": 73.8,
+            "quantity_kg": 10,
+            "dietary_type": "veg",
+            "pickup_time": "18:00",
+            "restaurant_reliability_score": 85,
+        },
+        candidate_ngos=[],
+    )
+
+    with pytest.raises(AIServiceUnavailableError):
+        client.rank_ngos(payload)
+
+    assert "path=/api/v1/matching/rank-ngos" in caplog.text
+    assert "timeout_seconds=60" in caplog.text
 
 
 def test_check_escalation_returns_action() -> None:

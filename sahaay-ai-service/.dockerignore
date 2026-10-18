@@ -5,4 +5,7 @@ __pycache__/
 .pytest_cache/
 .git/
 .gitignore
+.env
+.env.*
+!.env.example
 app/storage/*.pdf

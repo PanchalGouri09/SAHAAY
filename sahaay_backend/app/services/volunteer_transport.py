@@ -137,14 +137,14 @@ def ngo_vehicle_for_claim(client, claim: dict) -> Optional[bool]:
 
 
 def recompute_volunteer_transport_required(client, donation_id: str) -> bool:
-    """Recalculates `donations.volunteer_transport_required` from live claims.
+    """Recalculates the persisted volunteer requirement for a donation.
 
-    The rule, applied as a single aggregate over ALL current live claims:
+    With persisted transport coordination, the flag reflects actual open or
+    assigned volunteer tasks. Before that schema exists, retain the legacy
+    profile-based calculation for older deployments:
 
-        required = any(
-            live claim AND provider.vehicle_available IS FALSE
-                     AND ngo.vehicle_available IS FALSE
-        )
+        required = any(live claim AND provider.vehicle_available IS FALSE
+                       AND ngo.vehicle_available IS FALSE)
 
     Why an aggregate and not "clear on cancel": a donation can hold several
     claims at once. Clearing the flag because one claim was cancelled would hide
@@ -174,6 +174,41 @@ def recompute_volunteer_transport_required(client, donation_id: str) -> bool:
     if not getattr(donation, "data", None):
         # Nothing to flag. Do not invent a row.
         return False
+
+    try:
+        coordination_rows = (
+            client.table("claim_transport_coordination")
+            .select("claim_id,status")
+            .eq("donation_id", donation_id)
+            .execute()
+            .data
+        )
+    except Exception:
+        coordination_rows = None
+    if coordination_rows:
+        live_claims = (
+            client.table("claims")
+            .select("id,status")
+            .eq("donation_id", donation_id)
+            .in_("status", list(LIVE_CLAIM_STATUSES))
+            .execute()
+            .data
+            or []
+        )
+        live_claim_ids = {
+            str(row["id"])
+            for row in live_claims
+            if row.get("id") and is_live_claim_status(row.get("status"))
+        }
+        required = any(
+            str(row.get("claim_id")) in live_claim_ids
+            and row.get("status") in {"searching_for_volunteers", "volunteer_assigned"}
+            for row in coordination_rows
+        )
+        client.table("donations").update({"volunteer_transport_required": required}).eq(
+            "id", donation_id
+        ).execute()
+        return required
 
     provider_vehicle = provider_vehicle_for_donation(client, donation.data)
 

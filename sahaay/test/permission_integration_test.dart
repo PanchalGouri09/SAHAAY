@@ -110,8 +110,7 @@ void main() {
 
       expect(outcome, PermissionOutcome.denied);
       expect(
-        PermissionCopy.deniedMessage(
-            AppPermission.notifications, outcome),
+        PermissionCopy.deniedMessage(AppPermission.notifications, outcome),
         contains('inside SAHAAY'),
       );
     });

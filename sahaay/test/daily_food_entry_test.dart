@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:sahaay/main.dart';
 import 'package:sahaay/services/api_service.dart';
 import 'package:sahaay/services/firebase_auth_service.dart';
+import 'package:sahaay/services/profile_completion.dart';
 
 /// A Firebase core platform that answers from memory, so `FirebaseAuth.instance`
 /// resolves in a widget test without a real Firebase project, network call or
@@ -48,8 +49,12 @@ Widget _app(Widget child) => MaterialApp(
 /// render it need the real object. [FirebaseAuthService] resolves against the
 /// fake platform above, and the unconfigured API fails fast, so the dashboard
 /// renders its normal home tab.
-Widget _appWithState(Widget child) {
+AppState? _lastAppState;
+
+Widget _appWithState(Widget child, {ProfileCompletion? completion}) {
   final state = AppState(FirebaseAuthService());
+  state.profileCompletion = completion;
+  _lastAppState = state;
   return ChangeNotifierProvider<AppState>.value(
     value: state,
     child: _app(child),
@@ -225,7 +230,8 @@ void main() {
   }
 
   testWidgets('Prepared kg is required', (WidgetTester tester) async {
-    await submitWith(tester, '', '5', expectedError: 'Prepared (kg) is required');
+    await submitWith(tester, '', '5',
+        expectedError: 'Prepared (kg) is required');
   });
 
   testWidgets('Sold kg is required', (WidgetTester tester) async {
@@ -243,8 +249,7 @@ void main() {
         expectedError: 'Sold (kg) cannot be negative');
   });
 
-  testWidgets('Sold kg cannot exceed prepared kg',
-      (WidgetTester tester) async {
+  testWidgets('Sold kg cannot exceed prepared kg', (WidgetTester tester) async {
     await submitWith(tester, '20', '50',
         expectedError: 'Sold (kg) cannot exceed Prepared (kg)');
   });
@@ -373,6 +378,60 @@ void main() {
     expect(refreshes, 1);
   });
 
+  testWidgets('Refresh retries prediction and updates the dashboard entry',
+      (WidgetTester tester) async {
+    var refreshes = 0;
+    tester.view.physicalSize = const Size(1400, 2600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(_appWithState(ProviderDailyEntryGate(
+      loadToday: () async =>
+          _todayResponse(entryExists: true, predictionStatus: 'unavailable'),
+      refreshPrediction: () async {
+        refreshes++;
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        return _createResponse();
+      },
+    )));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.textContaining('No AI prediction is attached'), findsOneWidget);
+    await tester.tap(find.text('Refresh'));
+    await tester.pump();
+    expect(find.text('Refreshing…'), findsOneWidget);
+    await tester.pumpAndSettle();
+
+    expect(refreshes, 1);
+    expect(find.text('12.5 kg'), findsOneWidget);
+    expect(find.text('40.0 kg'), findsOneWidget);
+    expect(find.text('Refreshing…'), findsNothing);
+  });
+
+  testWidgets('Refresh failures remain visible without losing the entry',
+      (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1400, 2600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(_appWithState(ProviderDailyEntryGate(
+      loadToday: () async =>
+          _todayResponse(entryExists: true, predictionStatus: 'unavailable'),
+      refreshPrediction: () async =>
+          throw const ApiException(503, 'AI service offline'),
+    )));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.text('Refresh'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('AI service offline'), findsOneWidget);
+    expect(find.text('Refresh'), findsOneWidget);
+    expect(find.text('Daily Food Entry'), findsNothing);
+  });
+
   testWidgets('A missing entry renders an honest state, not a fake number',
       (WidgetTester tester) async {
     await tester.pumpWidget(_app(const SurplusPredictionCard()));
@@ -448,11 +507,20 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(_appWithState(ProviderDailyEntryGate(
-      loadToday: () async => _todayResponse(entryExists: true),
-    )));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pumpWidget(_appWithState(
+      ProviderDailyEntryGate(
+        loadToday: () async => _todayResponse(entryExists: true),
+      ),
+      completion: ProfileCompletion.fromBackend({
+        'role': 'provider',
+        'complete': true,
+        'completed_fields': 7,
+        'total_fields': 7,
+        'percentage': 100,
+        'missing_fields': <String>[],
+      }),
+    ));
+    await tester.pumpAndSettle();
 
     expect(find.text('Daily Food Entry'), findsNothing);
     expect(find.byType(BottomNavigationBar), findsOneWidget);
@@ -501,25 +569,82 @@ void main() {
     expect(find.text('Daily Food Entry'), findsNothing);
   });
 
+  testWidgets('incomplete provider is sent to profile completion before create',
+      (WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1400, 2600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final completion = ProfileCompletion.calculate(
+      role: 'provider',
+      account: {
+        'full_name': 'Test Provider',
+        'email': 'provider@example.org',
+        'phone': '+91 9876543210',
+      },
+      roleProfile: {
+        'organization_name': 'Test Kitchen',
+        'address': '1 Market Road',
+        'city': 'Pune',
+        'latitude': null,
+        'longitude': null,
+      },
+    );
+    await tester.pumpWidget(_appWithState(
+      ProviderDailyEntryGate(
+        loadToday: () async => _todayResponse(entryExists: true),
+      ),
+      completion: completion,
+    ));
+    await tester.pumpAndSettle();
+    _lastAppState!.profileCompletion = completion;
+    _lastAppState!.notifyListeners();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.textContaining('CREATE NEW DONATION'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Complete your profile first'), findsOneWidget);
+    expect(
+      find.textContaining('Pickup location coordinates'),
+      findsNWidgets(2),
+    );
+    expect(find.text('Create Donation'), findsNothing);
+  });
+
   testWidgets('The create-donation flow is still reachable from the gate',
       (WidgetTester tester) async {
     tester.view.physicalSize = const Size(1400, 2600);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(_appWithState(ProviderDailyEntryGate(
-      loadToday: () async => _todayResponse(entryExists: true),
-    )));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 100));
+    final complete = ProfileCompletion.fromBackend({
+      'role': 'provider',
+      'complete': true,
+      'completed_fields': 7,
+      'total_fields': 7,
+      'percentage': 100,
+      'missing_fields': <String>[],
+    });
+    await tester.pumpWidget(_appWithState(
+      ProviderDailyEntryGate(
+        loadToday: () async => _todayResponse(entryExists: true),
+      ),
+      completion: complete,
+    ));
+    await tester.pumpAndSettle();
+    _lastAppState!.profileCompletion = complete;
+    _lastAppState!.notifyListeners();
+    await tester.pumpAndSettle();
 
     await tester.tap(find.textContaining('CREATE NEW DONATION'));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 500));
 
     // The untouched donation sheet still opens.
     expect(find.text('Create Donation'), findsOneWidget);
     expect(find.widgetWithText(TextFormField, 'Food Name'), findsOneWidget);
-    expect(find.widgetWithText(TextFormField, 'Pickup Address'), findsOneWidget);
+    expect(
+        find.widgetWithText(TextFormField, 'Pickup Address'), findsOneWidget);
     expect(find.text('Food photo — required'), findsOneWidget);
   });
 }

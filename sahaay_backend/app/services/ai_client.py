@@ -10,6 +10,7 @@ The AI service must remain a separate, stateless microservice.
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import Any
 
@@ -30,6 +31,8 @@ from app.schemas.ai import (
     SurplusPredictionRequest,
     SurplusPredictionResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AIServiceError(Exception):
@@ -68,6 +71,7 @@ class AIClient:
         self,
         base_url: str | None = None,
         timeout: float | None = None,
+        match_timeout: float | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         settings = get_settings()
@@ -76,6 +80,7 @@ class AIClient:
             raise AIServiceConfigurationError()
         self.base_url = base.rstrip("/")
         self._timeout = timeout or settings.ai_request_timeout_seconds
+        self._match_timeout = match_timeout or settings.ai_match_request_timeout_seconds
         self._client = httpx.Client(base_url=self.base_url, timeout=self._timeout, transport=transport)
 
     def close(self) -> None:
@@ -96,7 +101,11 @@ class AIClient:
         return SurplusPredictionResponse.model_validate(data)
 
     def rank_ngos(self, payload: MatchRequest) -> MatchResponse:
-        data = self._post_json("/api/v1/matching/rank-ngos", payload)
+        data = self._post_json(
+            "/api/v1/matching/rank-ngos",
+            payload,
+            timeout=self._match_timeout,
+        )
         return MatchResponse.model_validate(data)
 
     def check_escalation(self, payload: EscalationCheckRequest) -> EscalationCheckResponse:
@@ -132,12 +141,33 @@ class AIClient:
     # Internals
     # ------------------------------------------------------------------
 
-    def _post_json(self, path: str, payload: Any) -> dict[str, Any]:
+    def _post_json(
+        self,
+        path: str,
+        payload: Any,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        request_timeout = timeout if timeout is not None else self._timeout
         try:
-            response = self._client.post(path, json=payload.model_dump(mode="json"))
+            response = self._client.post(
+                path,
+                json=payload.model_dump(mode="json"),
+                timeout=request_timeout,
+            )
         except httpx.TimeoutException as exc:
+            logger.warning(
+                "AI service request timed out path=%s timeout_seconds=%s",
+                path,
+                request_timeout,
+            )
             raise AIServiceUnavailableError() from exc
         except httpx.RequestError as exc:
+            logger.warning(
+                "AI service request failed path=%s error_type=%s",
+                path,
+                type(exc).__name__,
+            )
             raise AIServiceUnavailableError() from exc
         self._raise_for_status(response)
         try:
@@ -151,6 +181,10 @@ class AIClient:
     def _raise_for_status(self, response: httpx.Response) -> None:
         if 200 <= response.status_code < 300:
             return
+        logger.warning(
+            "AI service returned an unsuccessful response status_code=%s",
+            response.status_code,
+        )
         try:
             body = response.json()
         except ValueError:

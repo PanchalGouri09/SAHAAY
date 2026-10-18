@@ -28,6 +28,8 @@ from fastapi.testclient import TestClient
 
 from app.dependencies import get_current_firebase_user, get_current_profile
 from app.main import app
+from app.config import Settings
+from app.services import donation_offers as offer_service
 from app.services.ai_client import AIClient, get_ai_client
 from app.services.vehicle_logistics import (
     vehicle_compatibility,
@@ -55,6 +57,14 @@ class _RowResult(SimpleNamespace):
     pass
 
 
+class _RpcResult:
+    def __init__(self, data: dict) -> None:
+        self.data = data
+
+    def execute(self) -> _RowResult:
+        return _RowResult(data=self.data)
+
+
 #: Column defaults taken from the real schema, so a fake row always has the
 #: shape Postgres would actually give it.
 _COLUMN_DEFAULTS: dict[str, dict] = {
@@ -65,8 +75,9 @@ _COLUMN_DEFAULTS: dict[str, dict] = {
 
 
 class _FakeTable:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, owner: "_FakeSupabase") -> None:
         self._name = name
+        self._owner = owner
         self._rows: list[dict] = []
         self._filters: list[tuple] = []
         self._mode = "query"
@@ -130,6 +141,27 @@ class _FakeTable:
             for key, default in _COLUMN_DEFAULTS.get(self._name, {}).items():
                 inserted.setdefault(key, default)
             self._rows.append(inserted)
+            if self._name == "claims":
+                donation = next(
+                    (
+                        row
+                        for row in self._owner.table("donations")._rows
+                        if str(row.get("id")) == str(inserted.get("donation_id"))
+                    ),
+                    {},
+                )
+                self._owner.table("claim_transport_coordination")._rows.append(
+                    {
+                        "claim_id": inserted["id"],
+                        "donation_id": inserted["donation_id"],
+                        "provider_id": donation.get("provider_id"),
+                        "ngo_id": inserted.get("ngo_id"),
+                        "provider_response": None,
+                        "ngo_response": None,
+                        "responsible_role": None,
+                        "status": "awaiting_responses",
+                    }
+                )
             return _RowResult(data=[dict(inserted)])
         if values is not None:
             for row in rows:
@@ -159,7 +191,7 @@ class _FakeSupabase:
 
     def table(self, name: str) -> _FakeTable:
         if name not in self.tables:
-            self.tables[name] = _FakeTable(name)
+            self.tables[name] = _FakeTable(name, self)
         return self.tables[name]
 
     def seed(self, name: str, rows: list[dict]) -> None:
@@ -171,6 +203,137 @@ class _FakeSupabase:
             for key, default in _COLUMN_DEFAULTS.get(name, {}).items():
                 seeded.setdefault(key, default)
             target._rows.append(seeded)
+            if name == "ngos" and seeded.get("user_id"):
+                self.seed(
+                "users",
+                [
+                    {
+                        "id": seeded["user_id"],
+                        "role": "ngo",
+                        "full_name": "Test NGO Contact",
+                        "email": f"{seeded['user_id']}@example.org",
+                        "phone": "+91 9876543210",
+                    }
+                ],
+                )
+
+    def rpc(self, name: str, params: dict):
+        if name == "respond_to_claim_transport":
+            claim_id = str(params["p_claim_id"])
+            coordination = next(
+                row
+                for row in self.table("claim_transport_coordination")._rows
+                if str(row.get("claim_id")) == claim_id
+            )
+            role = params["p_actor_role"]
+            field = f"{role}_response"
+            if coordination.get(field) is not None:
+                return _RpcResult(dict(coordination))
+            coordination[field] = params["p_response"]
+            if params["p_response"] == "yes" and not coordination.get("responsible_role"):
+                coordination["responsible_role"] = role
+                coordination["status"] = f"{role}_transport"
+            if (
+                coordination.get("provider_response") == "no"
+                and coordination.get("ngo_response") == "no"
+            ):
+                delivery_table = self.table("deliveries")
+                existing = next(
+                    (
+                        row
+                        for row in delivery_table._rows
+                        if str(row.get("donation_id"))
+                        == str(coordination.get("donation_id"))
+                    ),
+                    None,
+                )
+                if existing is None:
+                    donation = next(
+                        row
+                        for row in self.table("donations")._rows
+                        if str(row.get("id"))
+                        == str(coordination.get("donation_id"))
+                    )
+                    ngo = next(
+                        row
+                        for row in self.table("ngos")._rows
+                        if str(row.get("id")) == str(coordination.get("ngo_id"))
+                    )
+                    created = (
+                        delivery_table.insert(
+                            {
+                                "donation_id": coordination["donation_id"],
+                                "claim_id": claim_id,
+                                "pickup_address": donation["pickup_address"],
+                                "delivery_address": ngo["address"],
+                                "pickup_time": donation.get("pickup_deadline"),
+                                "status": "unassigned",
+                                "volunteer_id": None,
+                            }
+                        )
+                        .select()
+                        .execute()
+                    )
+                    if not created.data:
+                        raise RuntimeError("delivery task could not be created")
+                elif existing.get("volunteer_id") is not None or existing.get("status") != "unassigned":
+                    raise RuntimeError("existing delivery task is not available")
+                else:
+                    old_claim = next(
+                        (
+                            row
+                            for row in self.table("claims")._rows
+                            if str(row.get("id")) == str(existing.get("claim_id"))
+                        ),
+                        {},
+                    )
+                    if str(existing.get("claim_id")) != claim_id and old_claim.get(
+                        "status"
+                    ) not in {"cancelled", "rejected"}:
+                        raise RuntimeError("existing delivery task belongs to a live claim")
+                    ngo = next(
+                        row
+                        for row in self.table("ngos")._rows
+                        if str(row.get("id")) == str(coordination.get("ngo_id"))
+                    )
+                    existing["claim_id"] = claim_id
+                    existing["delivery_address"] = ngo.get("address")
+                coordination["status"] = "searching_for_volunteers"
+                self.table("donations").update(
+                    {"volunteer_transport_required": True}
+                ).eq("id", str(coordination["donation_id"])).execute()
+            return _RpcResult(dict(coordination))
+
+        if name == "confirm_claim_volunteer_assignment":
+            delivery = next(
+                row
+                for row in self.table("deliveries")._rows
+                if str(row.get("id")) == str(params["p_delivery_id"])
+            )
+            coordination = next(
+                row
+                for row in self.table("claim_transport_coordination")._rows
+                if str(row.get("claim_id")) == str(delivery.get("claim_id"))
+            )
+            if (
+                coordination.get("status") != "searching_for_volunteers"
+                or delivery.get("status") != "unassigned"
+                or delivery.get("volunteer_id") is not None
+            ):
+                raise RuntimeError("transport task has already been accepted")
+            delivery.update(
+                {"volunteer_id": params["p_volunteer_id"], "status": "assigned"}
+            )
+            coordination.update(
+                {"responsible_role": "volunteer", "status": "volunteer_assigned"}
+            )
+            return _RpcResult(
+                {
+                    "delivery": dict(delivery),
+                    "coordination": dict(coordination),
+                },
+            )
+        raise AssertionError(f"Unexpected RPC: {name}")
 
 
 class _MatchHandler:
@@ -227,6 +390,20 @@ class _MatchHandler:
 @pytest.fixture
 def supabase(monkeypatch: pytest.MonkeyPatch):
     fake = _FakeSupabase()
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: Settings(firebase_phone_auth_enabled=True),
+    )
+
+    def persist(_client, *, donation_id, ranked_ngos):
+        candidates = offer_service._ranked_candidate_rows(ranked_ngos)
+        fake.seed(
+            "donation_match_candidates",
+            [{**candidate, "donation_id": donation_id} for candidate in candidates],
+        )
+        return {"status": "offered"}
+
+    monkeypatch.setattr(offer_service, "persist_ranked_candidates", persist)
     for module in (
         "app.dependencies.get_supabase_client",
         "app.routers.profile.get_supabase_client",
@@ -234,6 +411,7 @@ def supabase(monkeypatch: pytest.MonkeyPatch):
         "app.routers.donations.get_supabase_client",
         "app.routers.claims.get_supabase_client",
         "app.routers.deliveries.get_supabase_client",
+        "app.routers.transport_coordination.get_supabase_client",
     ):
         monkeypatch.setattr(module, lambda: fake)
     yield fake
@@ -243,12 +421,16 @@ def supabase(monkeypatch: pytest.MonkeyPatch):
 def _ngo_row(**overrides) -> dict:
     row = {
         "id": _NGO_ID,
+        "user_id": f"user-{_NGO_ID}",
         "organization_name": "Feed The City",
         "city": "Mumbai",
         "address": "12 NGO Lane",
         "verified": True,
         "food_capacity": 200,
-        "preferred_food_types": ["vegetarian", "vegan"],
+        "max_capacity_kg": 25,
+        # Food categories (SAHAAY vocabulary) are separate from dietary prefs.
+        "preferred_food_types": ["Cooked Meals"],
+        "dietary_preferences": ["vegetarian"],
         "available_from": "07:00",
         "available_to": "22:00",
         "latitude": 19.07,
@@ -264,6 +446,7 @@ def _seed_donation(supabase, **overrides) -> str:
         "provider_id": _PROVIDER_ID,
         "status": "available",
         "food_name": "Vegetable curry",
+        "food_category": "Cooked Meals",
         "quantity": 10.0,
         "unit": "kg",
         "servings": 40,
@@ -271,7 +454,7 @@ def _seed_donation(supabase, **overrides) -> str:
         "pickup_address": "5 Kitchen Road",
         "latitude": 19.0,
         "longitude": 72.8,
-        "pickup_deadline": "2030-01-01T18:00:00Z",
+        "pickup_deadline": "2030-01-01T13:00:00Z",
         "expiry_time": "2030-01-01T20:00:00Z",
     }
     donation.update(overrides)
@@ -288,13 +471,46 @@ def _login(role: str, profile_rows: dict | None = None) -> dict:
     """
     user_id = f"user-{role}-1"
     table = {"provider": "providers", "ngo": "ngos", "volunteer": "volunteers"}[role]
+    defaults = {
+        "provider": {
+            "id": f"{role}-1",
+            "organization_name": "Test Kitchen",
+            "address": "1 Market Road",
+            "city": "Pune",
+            "latitude": 18.52,
+            "longitude": 73.85,
+        },
+        "ngo": {
+            "id": f"{role}-1",
+            "organization_name": "Test Pantry",
+            "address": "2 Market Road",
+            "city": "Pune",
+            "latitude": 18.53,
+            "longitude": 73.86,
+            "available_from": "07:00",
+            "available_to": "22:00",
+            "max_capacity_kg": 25,
+            "preferred_food_types": ["Cooked Meals"],
+            "dietary_preferences": ["vegetarian"],
+            "verified": True,
+        },
+        "volunteer": {"id": f"{role}-1"},
+    }[role]
+    defaults.update(profile_rows or {})
     app.dependency_overrides[get_current_firebase_user] = lambda: {
-        "uid": f"fb-{role}-1"
+        "uid": f"fb-{role}-1",
+        "email": f"{role}@example.org",
+        "email_verified": True,
+        "phone_number": "+919876543210",
+        "firebase": {"identities": {"phone": ["+919876543210"]}},
     }
     app.dependency_overrides[get_current_profile] = lambda: {
         "id": user_id,
         "role": role,
-        table: [profile_rows or {"id": f"{role}-1"}],
+        "full_name": "Test Contact",
+        "email": f"{role}@example.org",
+        "phone": "+91 9876543210",
+        table: [defaults],
     }
     return user_id
 
@@ -339,7 +555,13 @@ def matching(supabase, monkeypatch: pytest.MonkeyPatch):
             }
         ],
     }
-    app.dependency_overrides[get_current_firebase_user] = lambda: {"uid": "fb-provider-1"}
+    app.dependency_overrides[get_current_firebase_user] = lambda: {
+        "uid": "fb-provider-1",
+        "email": "provider@example.org",
+        "email_verified": True,
+        "phone_number": "+919876543210",
+        "firebase": {"identities": {"phone": ["+919876543210"]}},
+    }
     app.dependency_overrides[get_current_profile] = lambda: handler.provider_profile
     app.dependency_overrides[get_ai_client] = lambda: AIClient(
         base_url="http://ai.test",
@@ -531,6 +753,7 @@ def test_matching_reports_pairwise_compatibility_for_every_combination(
         (None, None): "unknown",
     }
     for (provider_vehicle, ngo_vehicle), want in expected.items():
+        supabase.table("donation_match_candidates")._rows.clear()
         matching.provider_profile["providers"][0]["vehicle_available"] = provider_vehicle
         body = _match(supabase, ngo_vehicle, provider_vehicle)
         item = body["ranked_ngos"][0]
@@ -562,7 +785,7 @@ def test_matching_preserves_existing_ngo_eligibility_rules(matching, supabase) -
             _ngo_row(id="eligible", vehicle_available=True),
             _ngo_row(id="no-hours", available_from=None, available_to=None, vehicle_available=True),
             _ngo_row(id="no-coords", latitude=None, longitude=None, vehicle_available=True),
-            _ngo_row(id="no-capacity", food_capacity=0, vehicle_available=True),
+            _ngo_row(id="no-capacity", max_capacity_kg=0, vehicle_available=True),
             _ngo_row(id="no-dietary", preferred_food_types=[], vehicle_available=True),
         ],
     )
@@ -655,45 +878,37 @@ def _claim_as_ngo(
     )
 
 
-def test_claim_flags_donation_and_publishes_unassigned_task(supabase) -> None:
-    # Provider false + NGO false is the only pair that needs a volunteer.
+def test_claim_does_not_start_volunteer_search_until_both_no_responses(supabase) -> None:
+    # Profile vehicle preferences do not replace either participant's explicit
+    # response in the persisted coordination flow.
     response = _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
     assert response.status_code == 201, response.text
-    claim = response.json()
-
-    logistics = claim["logistics"]
-    assert logistics["vehicle_compatibility"] == "volunteer_required"
-    assert logistics["volunteer_transport_required"] is True
-    assert logistics["delivery_created"] is True
-
-    # The donation is flagged for donor/NGO/admin visibility.
-    assert supabase.table("donations")._rows[0]["volunteer_transport_required"] is True
-
-    # A genuine open task: no volunteer, status 'unassigned', real addresses.
-    task = supabase.table("deliveries")._rows[0]
-    assert task["volunteer_id"] is None
-    assert task["status"] == "unassigned"
-    assert task["pickup_address"] == "5 Kitchen Road"
-    assert task["delivery_address"] == "12 NGO Lane"
-    assert task["claim_id"] == claim["id"]
-
-
-def test_claim_publishes_no_task_when_transport_is_available(supabase) -> None:
-    # Provider can transport: nothing for a volunteer to do.
-    response = _claim_as_ngo(supabase, provider_vehicle=True, ngo_vehicle=False)
-
-    assert response.status_code == 201
-    assert response.json()["logistics"]["vehicle_compatibility"] == "provider_transport"
+    assert response.json()["logistics"]["vehicle_compatibility"] is None
+    assert response.json()["logistics"]["vehicle_compatibility_label"] == (
+        "Transport response needed"
+    )
     assert response.json()["logistics"]["volunteer_transport_required"] is False
+    assert supabase.table("donations")._rows[0]["volunteer_transport_required"] is False
     assert supabase.table("deliveries")._rows == []
 
 
-def test_claim_publishes_no_task_when_the_ngo_can_collect(supabase) -> None:
-    # NGO has a vehicle and can collect: the provider is not needed for transport.
+def test_claim_does_not_infer_a_provider_yes_from_profile_vehicle_data(supabase) -> None:
+    response = _claim_as_ngo(supabase, provider_vehicle=True, ngo_vehicle=False)
+
+    assert response.status_code == 201
+    assert response.json()["logistics"]["volunteer_transport_required"] is False
+    assert response.json()["logistics"]["delivery_created"] is False
+    assert supabase.table("deliveries")._rows == []
+
+
+def test_claim_does_not_infer_an_ngo_yes_from_profile_vehicle_data(supabase) -> None:
     response = _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=True)
 
     assert response.status_code == 201
-    assert response.json()["logistics"]["vehicle_compatibility"] == "ngo_transport"
+    assert response.json()["logistics"]["vehicle_compatibility"] is None
+    assert response.json()["logistics"]["vehicle_compatibility_label"] == (
+        "Transport response needed"
+    )
     assert supabase.table("deliveries")._rows == []
 
 
@@ -702,27 +917,103 @@ def test_unknown_vehicle_data_never_creates_a_volunteer_task(supabase) -> None:
     response = _claim_as_ngo(supabase, provider_vehicle=None, ngo_vehicle=False)
 
     assert response.status_code == 201
-    assert response.json()["logistics"]["vehicle_compatibility"] == "unknown"
+    assert response.json()["logistics"]["vehicle_compatibility"] is None
+    assert response.json()["logistics"]["vehicle_compatibility_label"] == (
+        "Transport response needed"
+    )
     assert response.json()["logistics"]["volunteer_transport_required"] is False
     assert supabase.table("deliveries")._rows == []
 
 
-def test_repeat_claims_do_not_duplicate_the_task(supabase) -> None:
-    # deliveries has a UNIQUE index on donation_id.
+def test_repeat_claims_do_not_create_tasks_before_both_no_responses(supabase) -> None:
     first = _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
     assert first.status_code == 201
-    _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
+    second = _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
 
-    assert len(supabase.table("deliveries")._rows) == 1
+    assert second.status_code == 201
+    assert supabase.table("deliveries")._rows == []
 
 
 def _volunteer_task_id(supabase) -> str:
-    """Creates a real volunteer_required claim and returns the task's id."""
+    """Creates a claim, records both No responses, and returns its real task."""
     response = _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
     assert response.status_code == 201, response.text
-    task_id = response.json()["logistics"]["delivery_id"]
-    assert task_id, "a volunteer task should have been published"
-    return task_id
+    claim_id = response.json()["id"]
+    first = client.post(
+        f"/api/v1/claims/{claim_id}/transport-coordination/respond",
+        json={"response": "no"},
+    )
+    assert first.status_code == 200, first.text
+    _login("provider", {"id": _PROVIDER_ID, "organization_name": "Tasty Kitchen"})
+    second = client.post(
+        f"/api/v1/claims/{claim_id}/transport-coordination/respond",
+        json={"response": "no"},
+    )
+    assert second.status_code == 200, second.text
+    task = next(
+        row
+        for row in supabase.table("deliveries")._rows
+        if str(row.get("claim_id")) == str(claim_id)
+    )
+    assert task["status"] == "unassigned"
+    return str(task["id"])
+
+
+def test_both_no_responses_publish_one_persisted_volunteer_task(supabase) -> None:
+    claim = _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
+    claim_id = claim.json()["id"]
+    supabase.table("providers")._rows[0]["user_id"] = "user-provider"
+    supabase.table("ngos")._rows[0]["user_id"] = "user-ngo"
+
+    first = client.post(
+        f"/api/v1/claims/{claim_id}/transport-coordination/respond",
+        json={"response": "no"},
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "awaiting_responses"
+    assert supabase.table("deliveries")._rows == []
+    assert supabase.table("donations")._rows[0]["volunteer_transport_required"] is False
+
+    _login("provider", {"id": _PROVIDER_ID, "organization_name": "Tasty Kitchen"})
+    second = client.post(
+        f"/api/v1/claims/{claim_id}/transport-coordination/respond",
+        json={"response": "no"},
+    )
+    assert second.status_code == 200
+    assert second.json()["status"] == "searching_for_volunteers"
+    assert supabase.table("donations")._rows[0]["volunteer_transport_required"] is True
+    assert len(supabase.table("deliveries")._rows) == 1
+    task = supabase.table("deliveries")._rows[0]
+    assert task["status"] == "unassigned"
+    assert task["volunteer_id"] is None
+
+    notification_count = len(supabase.table("notifications")._rows)
+    repeated = client.post(
+        f"/api/v1/claims/{claim_id}/transport-coordination/respond",
+        json={"response": "no"},
+    )
+    assert repeated.status_code == 200
+    assert len(supabase.table("deliveries")._rows) == 1
+    assert len(supabase.table("notifications")._rows) == notification_count
+
+
+def _answer_both_no(supabase, claim_id: str, ngo_id: str) -> httpx.Response:
+    ngo = next(
+        row
+        for row in supabase.table("ngos")._rows
+        if str(row.get("id")) == str(ngo_id)
+    )
+    _login("ngo", {"id": ngo_id, "organization_name": ngo.get("organization_name")})
+    first = client.post(
+        f"/api/v1/claims/{claim_id}/transport-coordination/respond",
+        json={"response": "no"},
+    )
+    assert first.status_code == 200, first.text
+    _login("provider", {"id": _PROVIDER_ID, "organization_name": "Tasty Kitchen"})
+    return client.post(
+        f"/api/v1/claims/{claim_id}/transport-coordination/respond",
+        json={"response": "no"},
+    )
 
 
 def test_volunteer_task_is_discoverable_with_real_facts(supabase) -> None:
@@ -884,7 +1175,7 @@ def test_A_false_provider_and_ngo_with_a_live_claim_requires_a_volunteer(supabas
 
     assert response.status_code == 201
     assert _claim_status(supabase, response.json()["id"]) == "pending"
-    assert _flag(supabase) is True
+    assert _flag(supabase) is False
 
 
 # --- B: cancelled with no other live claim => requirement removed ---------
@@ -900,10 +1191,7 @@ def test_B_terminal_claim_without_others_removes_the_requirement(
         f"/api/v1/claims/{claim_id}?status={terminal}"
     ).status_code == 200
 
-    # 'completed' is still a LIVE status for this feature, so only cancelled and
-    # rejected drop the requirement. Both directions are asserted explicitly so
-    # the live-status definition cannot be silently reinterpreted later.
-    assert _flag(supabase) is (terminal == "completed")
+    assert _flag(supabase) is False
 
 
 # --- C: one cancelled, one still pending => requirement REMAINS ----------
@@ -922,9 +1210,9 @@ def test_C_a_cancelled_claim_does_not_clear_a_pending_claims_requirement(supabas
     # Recompute the way the lifecycle does, from the current live claims.
     from app.services.volunteer_transport import recompute_volunteer_transport_required
 
-    assert recompute_volunteer_transport_required(supabase, _DONATION_ID) is True
+    assert recompute_volunteer_transport_required(supabase, _DONATION_ID) is False
     assert _claim_status(supabase, second_id) == "pending"
-    assert _flag(supabase) is True
+    assert _flag(supabase) is False
 
 
 # --- D: every claim dead => requirement removed --------------------------
@@ -967,7 +1255,7 @@ def test_E_to_H_a_live_claim_that_is_not_false_false_never_requires_a_volunteer(
 def test_recompute_is_idempotent_for_unchanged_state(supabase) -> None:
     from app.services.volunteer_transport import recompute_volunteer_transport_required
 
-    _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
+    _volunteer_task_id(supabase)
     results = [recompute_volunteer_transport_required(supabase, _DONATION_ID) for _ in range(3)]
 
     assert results == [True, True, True]
@@ -1042,24 +1330,31 @@ def test_J2_every_live_claim_status_keeps_the_task_discoverable(supabase, live) 
 
 # --- K: a task that cannot be published must not leave a false flag -----
 def test_K_unpublishable_task_fails_loudly_without_flagging(supabase) -> None:
-    # No NGO address, so the task cannot honestly be described. The request must
-    # fail rather than report a requirement no volunteer could ever find.
+    # An NGO without a saved address is incomplete, so the backend rejects the
+    # claim before creating a claim row or publishing a volunteer task.
     supabase.seed("ngos", [_ngo_row(vehicle_available=False, address=None)])
     supabase.seed(
         "providers",
         [{"id": _PROVIDER_ID, "organization_name": "Tasty Kitchen", "vehicle_available": False}],
     )
     _seed_donation(supabase)
-    _login("ngo", {"id": _NGO_ID, "organization_name": "Feed The City", "vehicle_available": False})
+    _login(
+        "ngo",
+        {
+            "id": _NGO_ID,
+            "organization_name": "Feed The City",
+            "address": None,
+            "vehicle_available": False,
+        },
+    )
 
     response = client.post(
         "/api/v1/claims", json={"donation_id": _DONATION_ID, "requested_quantity": 5.0}
     )
 
-    assert response.status_code == 503
-    assert "volunteer" in response.json()["detail"].lower()
-    # The critical assertion: no requirement is advertised for work that does
-    # not exist, and no fake task was invented.
+    assert response.status_code == 409
+    assert "Address" in response.json()["detail"]
+    # No incomplete profile reaches claim/task persistence.
     assert _flag(supabase) is False
     assert supabase.table("deliveries")._rows == []
 
@@ -1067,12 +1362,8 @@ def test_K_unpublishable_task_fails_loudly_without_flagging(supabase) -> None:
 def test_K2_a_failed_delivery_insert_does_not_flag_the_donation(
     supabase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _volunteer_task_id(supabase)
-    # Reset to a clean donation, then make the insert silently return no row.
-    donation = supabase.table("donations")._rows[0]
-    donation["volunteer_transport_required"] = False
-    supabase.table("deliveries")._rows.clear()
-    supabase.table("claims")._rows.clear()
+    claim = _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
+    claim_id = claim.json()["id"]
 
     table = supabase.table("deliveries")
     original_execute = table.execute
@@ -1085,7 +1376,16 @@ def test_K2_a_failed_delivery_insert_does_not_flag_the_donation(
 
     monkeypatch.setattr(table, "execute", failing_execute)
 
-    response = _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
+    first = client.post(
+        f"/api/v1/claims/{claim_id}/transport-coordination/respond",
+        json={"response": "no"},
+    )
+    assert first.status_code == 200
+    _login("provider", {"id": _PROVIDER_ID, "organization_name": "Tasty Kitchen"})
+    response = client.post(
+        f"/api/v1/claims/{claim_id}/transport-coordination/respond",
+        json={"response": "no"},
+    )
 
     assert response.status_code == 503
     assert _flag(supabase) is False
@@ -1131,6 +1431,7 @@ def test_M_unassigned_guard_survives_the_lifecycle_change(supabase) -> None:
 def test_reusing_a_task_rebinds_it_to_the_new_live_claim(supabase) -> None:
     first = _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
     first_claim = first.json()["id"]
+    assert _answer_both_no(supabase, first_claim, _NGO_ID).status_code == 200
     _set_claim_status(supabase, first_claim, "cancelled")
 
     # A second live claim that also needs a volunteer. deliveries.donation_id is
@@ -1147,6 +1448,7 @@ def test_reusing_a_task_rebinds_it_to_the_new_live_claim(supabase) -> None:
     )
     assert second.status_code == 201, second.text
     second_claim = second.json()["id"]
+    assert _answer_both_no(supabase, second_claim, _SECOND_NGO_ID).status_code == 200
 
     rows = supabase.table("deliveries")._rows
     assert len(rows) == 1, "the UNIQUE donation_id constraint must not be bypassed"
@@ -1166,6 +1468,7 @@ def test_reusing_a_task_rebinds_it_to_the_new_live_claim(supabase) -> None:
 def test_a_taken_task_is_never_rebound_to_another_claim(supabase) -> None:
     first = _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
     first_claim = first.json()["id"]
+    assert _answer_both_no(supabase, first_claim, _NGO_ID).status_code == 200
     task_id = supabase.table("deliveries")._rows[0]["id"]
 
     # A real volunteer takes the work.
@@ -1179,7 +1482,12 @@ def test_a_taken_task_is_never_rebound_to_another_claim(supabase) -> None:
     )
     _login("ngo", {"id": _SECOND_NGO_ID, "organization_name": "Second NGO",
                    "vehicle_available": False, "address": "99 Other Road"})
-    client.post("/api/v1/claims", json={"donation_id": _DONATION_ID, "requested_quantity": 2.0})
+    second = client.post(
+        "/api/v1/claims", json={"donation_id": _DONATION_ID, "requested_quantity": 2.0}
+    )
+    second_claim = second.json()["id"]
+    response = _answer_both_no(supabase, second_claim, _SECOND_NGO_ID)
+    assert response.status_code == 409
 
     task = supabase.table("deliveries")._rows[0]
     # Somebody is already on it: the row must be left completely alone.
@@ -1194,7 +1502,7 @@ def test_the_escalation_auto_rejection_recomputes_the_flag(supabase) -> None:
 
     response = _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
     claim_id = response.json()["id"]
-    assert _flag(supabase) is True
+    assert _flag(supabase) is False
 
     # The auto-rejection only ever touches a claim that is still 'pending', so a
     # false/false pending claim is exactly the case that must be recalculated.
@@ -1230,8 +1538,8 @@ def test_the_recompute_helper_never_touches_a_second_donation(supabase) -> None:
     # one donation must not clear another donation's flag.
     from app.services.volunteer_transport import recompute_volunteer_transport_required
 
-    first = _claim_as_ngo(supabase, provider_vehicle=False, ngo_vehicle=False)
-    assert first.status_code == 201
+    task_id = _volunteer_task_id(supabase)
+    assert task_id
     supabase.seed(
         "donations",
         [
@@ -1395,13 +1703,23 @@ def test_a_task_with_no_resolvable_claim_cannot_be_accepted(supabase) -> None:
     assert supabase.table("deliveries")._rows[0]["volunteer_id"] is None
 
 
-def test_a_claim_that_dies_mid_acceptance_is_rolled_back(supabase) -> None:
+def test_legacy_assignment_rolls_back_if_claim_dies_mid_acceptance(
+    supabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Narrowest possible window: the claim is cancelled AFTER the pre-check
     # passes but BEFORE the assignment lands. The post-update re-check must undo
     # the assignment rather than leave a volunteer holding dead work.
     task_id = _volunteer_task_id(supabase)
     claim_id = supabase.table("deliveries")._rows[0]["claim_id"]
     _login("volunteer", {"id": "volunteer-1"})
+    original_table = supabase.table
+
+    def without_coordination(name):
+        if name == "claim_transport_coordination":
+            raise RuntimeError("coordination schema unavailable")
+        return original_table(name)
+
+    monkeypatch.setattr(supabase, "table", without_coordination)
 
     deliveries = supabase.table("deliveries")
     original_execute = deliveries.execute
@@ -1440,12 +1758,22 @@ def test_a_claim_that_dies_mid_acceptance_is_rolled_back(supabase) -> None:
     assert client.get("/api/v1/deliveries").json() == []
 
 
-def test_the_rollback_cannot_steal_a_concurrent_accept(supabase) -> None:
+def test_legacy_rollback_cannot_steal_a_concurrent_accept(
+    supabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # The compensating write is guarded on volunteer_id, so if somebody else
     # legitimately took the task in the meantime it must leave them alone.
     task_id = _volunteer_task_id(supabase)
     claim_id = supabase.table("deliveries")._rows[0]["claim_id"]
     _login("volunteer", {"id": "volunteer-1"})
+    original_table = supabase.table
+
+    def without_coordination(name):
+        if name == "claim_transport_coordination":
+            raise RuntimeError("coordination schema unavailable")
+        return original_table(name)
+
+    monkeypatch.setattr(supabase, "table", without_coordination)
 
     deliveries = supabase.table("deliveries")
     original_execute = deliveries.execute

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart' show MediaType;
 
@@ -19,19 +20,75 @@ class ApiService {
   final FirebaseAuth _auth;
   final http.Client _client;
   static const _baseUrl = String.fromEnvironment('API_BASE_URL');
+  static const _placesMethodChannel = MethodChannel('sahaay/places');
+  static const _configurationError =
+      'The FastAPI backend URL is not configured. Set a valid '
+      'API_BASE_URL in sahaay/env.json and rebuild with '
+      'sahaay/scripts/build_release.ps1.';
 
   ApiService({FirebaseAuth? auth, http.Client? client})
       : _auth = auth ?? FirebaseAuth.instance,
         _client = client ?? http.Client();
 
-  bool get isConfigured =>
-      _baseUrl.isNotEmpty && !_baseUrl.contains('your-fastapi-host');
+  bool get isConfigured => _configuredBaseUrl != null;
+
+  String? get _configuredBaseUrl {
+    if (!isValidBaseUrl(_baseUrl)) return null;
+    return _baseUrl.trim().replaceFirst(RegExp(r'/+$'), '');
+  }
+
+  @visibleForTesting
+  static bool isValidBaseUrl(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty ||
+        trimmed != value ||
+        trimmed.contains(RegExp(r'\s'))) {
+      return false;
+    }
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null ||
+        !uri.hasAuthority ||
+        uri.host.isEmpty ||
+        !const {'http', 'https'}.contains(uri.scheme.toLowerCase()) ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasQuery ||
+        uri.hasFragment) {
+      return false;
+    }
+    final host = uri.host.toLowerCase();
+    final address = InternetAddress.tryParse(host);
+    return host != 'localhost' &&
+        !host.endsWith('.localhost') &&
+        host != 'example.com' &&
+        !host.endsWith('.example.com') &&
+        !host.contains('your-fastapi-host') &&
+        !host.contains('your-project') &&
+        host != '0.0.0.0' &&
+        host != '::' &&
+        address?.isLoopback != true;
+  }
+
+  String _requireBaseUrl() {
+    final baseUrl = _configuredBaseUrl;
+    if (baseUrl == null) throw const ApiException(0, _configurationError);
+    return baseUrl;
+  }
 
   Future<Map<String, dynamic>> getProfile() =>
       _request('GET', '/api/v1/profile');
 
   Future<Map<String, dynamic>> createProfile(Map<String, dynamic> payload) =>
       _request('POST', '/api/v1/profile', body: payload);
+
+  /// Restores an existing SAHAAY account to the signed-in Firebase identity.
+  ///
+  /// Used when the Firebase user was re-created (new UID) but the SAHAAY row
+  /// still exists for the same verified email: the backend re-links the row to
+  /// the new UID and returns the profile, so the person logs straight in
+  /// instead of being pushed into enrollment and hitting an email conflict.
+  /// Throws a 404 [ApiException] when there is genuinely no account to restore.
+  Future<Map<String, dynamic>> adoptProfile() =>
+      _request('POST', '/api/v1/profile/adopt');
 
   Future<Map<String, dynamic>> updateProfile(Map<String, dynamic> payload) =>
       _request('PATCH', '/api/v1/profile', body: payload);
@@ -66,19 +123,45 @@ class ApiService {
   Future<Map<String, dynamic>> createDonation(Map<String, dynamic> payload) =>
       _request('POST', '/api/v1/donations', body: payload);
 
+  Future<Map<String, dynamic>> updateDonationFoodType(
+    String donationId,
+    String vegType,
+  ) =>
+      _request(
+        'PATCH',
+        '/api/v1/donations/$donationId/matching-details',
+        body: <String, dynamic>{'veg_type': vegType},
+      );
+
+  /// The real, opt-in Public Impact Leaderboard (FR-19): organizations ranked
+  /// by the kilograms `impact_records` genuinely recorded for their completed
+  /// donations. Returns an empty list when nobody opted in or nothing is
+  /// recorded — never seeded or demo rows.
+  Future<List<dynamic>> getLeaderboard() async {
+    final response = await _request('GET', '/api/v1/leaderboard');
+    return response['entries'] is List
+        ? response['entries'] as List<dynamic>
+        : <dynamic>[];
+  }
+
+  /// Persists whether the signed-in organization appears on the public
+  /// leaderboard. The backend resolves the account from the Firebase token, so
+  /// no user id is ever sent.
+  Future<Map<String, dynamic>> setLeaderboardVisibility(bool visible) =>
+      _request('PATCH', '/api/v1/profile/leaderboard-visibility',
+          body: <String, dynamic>{'public': visible});
+
   /// Uploads a food photo through the authenticated backend boundary and
   /// returns the persistent public URL to attach to the donation.
   Future<String> uploadDonationImage(File file) async {
-    if (!isConfigured) {
-      throw const ApiException(0, 'The FastAPI backend URL is not configured.');
-    }
+    final baseUrl = _requireBaseUrl();
     final user = _auth.currentUser;
     final token = await user?.getIdToken();
     if (token == null || token.isEmpty) {
       throw const ApiException(401, 'You must be signed in to use SAHAAY.');
     }
     final request =
-        await buildUploadRequest(baseUrl: _baseUrl, token: token, file: file);
+        await buildUploadRequest(baseUrl: baseUrl, token: token, file: file);
     final response = await _client.send(request);
     final text = await response.stream.bytesToString();
     dynamic decoded;
@@ -99,6 +182,47 @@ class ApiService {
     if (url is! String || url.isEmpty) {
       throw ApiException(
           response.statusCode, 'Backend did not return an image URL.');
+    }
+    return url;
+  }
+
+  /// Uploads a profile photo through the authenticated backend boundary and
+  /// returns the persistent URL to store on the profile. Mirrors the
+  /// food-photo upload; degrades into a clear error message until the backend
+  /// exposes the upload route.
+  Future<String> uploadProfilePhoto(File file) async {
+    final baseUrl = _requireBaseUrl();
+    final user = _auth.currentUser;
+    final token = await user?.getIdToken();
+    if (token == null || token.isEmpty) {
+      throw const ApiException(401, 'You must be signed in to use SAHAAY.');
+    }
+    final request = await buildUploadRequest(
+      baseUrl: baseUrl,
+      token: token,
+      file: file,
+      uploadPath: '/api/v1/profile/upload-photo',
+    );
+    final response = await _client.send(request);
+    final text = await response.stream.bytesToString();
+    dynamic decoded;
+    if (text.isNotEmpty) {
+      try {
+        decoded = jsonDecode(text);
+      } catch (_) {
+        decoded = null;
+      }
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final detail = decoded is Map<String, dynamic> ? decoded['detail'] : null;
+      throw ApiException(response.statusCode,
+          detail?.toString() ?? 'Profile photo upload failed.');
+    }
+    final url =
+        decoded is Map<String, dynamic> ? decoded['profile_image_url'] : null;
+    if (url is! String || url.isEmpty) {
+      throw ApiException(
+          response.statusCode, 'Backend did not return a photo URL.');
     }
     return url;
   }
@@ -134,13 +258,14 @@ class ApiService {
     required String baseUrl,
     required String token,
     required File file,
+    String uploadPath = '/api/v1/donations/upload',
   }) async {
     final mime = mimeForPath(file.path);
     final filename =
         file.uri.pathSegments.isNotEmpty ? file.uri.pathSegments.last : 'photo';
     return http.MultipartRequest(
       'POST',
-      Uri.parse('$baseUrl/api/v1/donations/upload'),
+      Uri.parse('$baseUrl$uploadPath'),
     )
       ..headers['Authorization'] = 'Bearer $token'
       ..files.add(await http.MultipartFile.fromPath(
@@ -173,6 +298,11 @@ class ApiService {
   Future<Map<String, dynamic>> getTodayDailyFoodEntry() =>
       _request('GET', '/api/v1/daily-food/today');
 
+  /// Retries today's prediction from the food amounts already stored by the
+  /// backend. No client-supplied or inferred prediction inputs are accepted.
+  Future<Map<String, dynamic>> refreshTodayDailyFoodPrediction() =>
+      _request('POST', '/api/v1/daily-food/today/prediction/refresh');
+
   /// The signed-in provider's previous daily entries, newest first.
   Future<List<dynamic>> getDailyFoodHistory() async {
     final response = await _request('GET', '/api/v1/daily-food/history');
@@ -187,6 +317,51 @@ class ApiService {
         ? response['data'] as List<dynamic>
         : <dynamic>[];
   }
+
+  /// Claims attached to donations owned by the signed-in provider. The backend
+  /// enriches each row only with safe NGO display information.
+  Future<List<dynamic>> getProviderClaims() async {
+    final response = await _request('GET', '/api/v1/claims/provider');
+    return response['data'] is List
+        ? response['data'] as List<dynamic>
+        : <dynamic>[];
+  }
+
+  Future<Map<String, dynamic>> getTransportCoordination(String claimId) =>
+      _request('GET', '/api/v1/claims/$claimId/transport-coordination');
+
+  Future<Map<String, dynamic>> respondToTransportCoordination(
+    String claimId, {
+    required String response,
+    String? captainName,
+    String? captainPhone,
+  }) =>
+      _request(
+        'POST',
+        '/api/v1/claims/$claimId/transport-coordination/respond',
+        body: <String, dynamic>{
+          'response': response,
+          if (captainName != null) 'captain_name': captainName,
+          if (captainPhone != null) 'captain_phone': captainPhone,
+        },
+      );
+
+  /// Persisted ranked offers addressed to the signed-in NGO.
+  ///
+  /// The backend derives the NGO from authentication and enriches each offer
+  /// with its donation and persisted ranking. This is not a public feed.
+  Future<List<dynamic>> getNgoDonationOffers() async {
+    final response = await _request('GET', '/api/v1/donation-offers');
+    return response['data'] is List
+        ? response['data'] as List<dynamic>
+        : <dynamic>[];
+  }
+
+  /// Records the signed-in NGO's decision for one of its persisted offers.
+  Future<Map<String, dynamic>> respondToDonationOffer(
+          String offerId, String decision) =>
+      _request('POST', '/api/v1/donation-offers/$offerId/respond',
+          body: <String, dynamic>{'decision': decision});
 
   Future<Map<String, dynamic>> createClaim(Map<String, dynamic> payload) =>
       _request('POST', '/api/v1/claims', body: payload);
@@ -235,10 +410,57 @@ class ApiService {
   Future<Map<String, dynamic>> markNotificationRead(String notificationId) =>
       _request('PATCH', '/api/v1/notifications/$notificationId/read');
 
+  /// Registers (or refreshes) this device's FCM token for the signed-in user.
+  /// The backend owns the (user, token) upsert, so no user id is ever sent.
+  Future<Map<String, dynamic>> registerFcmToken(
+          String token, String platform) =>
+      _request('POST', '/api/v1/notifications/device-token',
+          body: <String, dynamic>{'token': token, 'platform': platform});
+
+  /// Geocodes a human-readable address into latitude/longitude coordinates
+  /// using Android's platform Geocoder.
+  /// Returns null when the address cannot be geocoded, allowing the donor to
+  /// still submit the donation without coordinates (map will show
+  /// "Location unavailable" honestly).
+  Future<({double latitude, double longitude})?> geocodeAddress(
+      String address) async {
+    if (address.trim().isEmpty) return null;
+    final Object? raw = await _placesMethodChannel
+        .invokeMethod('geocode', {'address': address.trim()});
+    if (raw is! Map) return null;
+    final lat = raw['latitude'];
+    final lng = raw['longitude'];
+    if (lat is! num || lng is! num) return null;
+    final latitude = lat.toDouble();
+    final longitude = lng.toDouble();
+    if (!latitude.isFinite ||
+        !longitude.isFinite ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180) {
+      return null;
+    }
+    return (latitude: latitude, longitude: longitude);
+  }
+
   /// NGO Matching — returns the AI service's ranked NGO list for a donation
   /// (or an `insufficient_data`/`no_candidates` status when not integrable).
   Future<Map<String, dynamic>> matchDonation(String donationId) =>
       _request('POST', '/api/v1/donations/$donationId/match');
+
+  /// Refreshes matching idempotently, then reads the saved ranking and offer
+  /// state for the signed-in provider's donation.
+  Future<Map<String, dynamic>> getDonationOffers(String donationId) =>
+      _request('GET', '/api/v1/donations/$donationId/offers');
+
+  /// Checks a provider-owned ranked offer against its database-clock deadline.
+  /// If due, the backend advances it through the same RPC used by the scheduler.
+  Future<Map<String, dynamic>> checkRankedOfferEscalation(String donationId) =>
+      _request(
+        'POST',
+        '/api/v1/donations/$donationId/offers/escalation-check',
+      );
 
   /// Auto-Escalation — asks the AI service whether the current claim has timed
   /// out and, if so, escalates to the next ranked NGO on the backend.
@@ -274,6 +496,70 @@ class ApiService {
           0, 'The acknowledgment PDF came back empty from the backend.');
     }
     return bytes;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Handover verification (server-authoritative)
+  // ---------------------------------------------------------------------------
+  // The claimed-donation screen used to mint a random code in the client and
+  // "verify" it against itself, so any client could declare a handover complete
+  // with no backend involvement. These call the real lifecycle instead: the
+  // code is minted once, stored only as a hash, and verification is the only
+  // thing that completes the donation.
+
+  /// Current handover state for the signed-in NGO's claim on this donation.
+  Future<Map<String, dynamic>> getHandoverState(String donationId) =>
+      _request('GET', '/api/v1/donations/$donationId/handover');
+
+  /// Mints a fresh 4-digit handover code (NGO only). The plaintext code is
+  /// returned exactly once; only its per-claim hash is stored server-side.
+  Future<Map<String, dynamic>> generateHandoverCode(String donationId) =>
+      _request('POST', '/api/v1/donations/$donationId/handover/code');
+
+  /// Submits a handover code for verification (provider or NGO). The backend
+  /// resolves the claim from the Firebase token, so no claim id is ever sent.
+  Future<Map<String, dynamic>> verifyHandoverCode(
+          String donationId, String code) =>
+      _request('POST', '/api/v1/donations/$donationId/handover/verify',
+          body: <String, dynamic>{'code': code});
+
+  /// Uploads the physical-handover proof photo (NGO only) and returns the
+  /// persistent public URL the backend stored on the claim.
+  Future<String> uploadHandoverPhoto(String donationId, File file) async {
+    final baseUrl = _requireBaseUrl();
+    final user = _auth.currentUser;
+    final token = await user?.getIdToken();
+    if (token == null || token.isEmpty) {
+      throw const ApiException(401, 'You must be signed in to use SAHAAY.');
+    }
+    final request = await buildUploadRequest(
+      baseUrl: baseUrl,
+      token: token,
+      file: file,
+      uploadPath: '/api/v1/donations/$donationId/handover/photo',
+    );
+    final response = await _client.send(request);
+    final text = await response.stream.bytesToString();
+    dynamic decoded;
+    if (text.isNotEmpty) {
+      try {
+        decoded = jsonDecode(text);
+      } catch (_) {
+        decoded = null;
+      }
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final detail = decoded is Map<String, dynamic> ? decoded['detail'] : null;
+      throw ApiException(response.statusCode,
+          detail?.toString() ?? 'Handover photo upload failed.');
+    }
+    final url =
+        decoded is Map<String, dynamic> ? decoded['handover_photo_url'] : null;
+    if (url is! String || url.isEmpty) {
+      throw ApiException(
+          response.statusCode, 'Backend did not return a photo URL.');
+    }
+    return url;
   }
 
   /// Admin — real-time overview counters for the dashboard header cards.
@@ -356,15 +642,13 @@ class ApiService {
     String path, {
     Map<String, dynamic>? body,
   }) async {
-    if (!isConfigured) {
-      throw const ApiException(0, 'The FastAPI backend URL is not configured.');
-    }
+    final baseUrl = _requireBaseUrl();
     final user = _auth.currentUser;
     final token = await user?.getIdToken();
     if (token == null || token.isEmpty) {
       throw const ApiException(401, 'You must be signed in to use SAHAAY.');
     }
-    final request = http.Request(method, Uri.parse('$_baseUrl$path'))
+    final request = http.Request(method, Uri.parse('$baseUrl$path'))
       ..headers.addAll({
         'Authorization': 'Bearer $token',
         'Content-Type': 'application/json',
@@ -391,16 +675,15 @@ class ApiService {
     String method,
     String path, {
     Map<String, dynamic>? body,
+    bool forceRefreshToken = false,
   }) async {
-    if (!isConfigured) {
-      throw const ApiException(0, 'The FastAPI backend URL is not configured.');
-    }
+    final baseUrl = _requireBaseUrl();
     final user = _auth.currentUser;
-    final token = await user?.getIdToken();
+    final token = await user?.getIdToken(forceRefreshToken);
     if (token == null || token.isEmpty) {
       throw const ApiException(401, 'You must be signed in to use SAHAAY.');
     }
-    final request = http.Request(method, Uri.parse('$_baseUrl$path'))
+    final request = http.Request(method, Uri.parse('$baseUrl$path'))
       ..headers.addAll({
         'Authorization': 'Bearer $token',
         'Content-Type': 'application/json',

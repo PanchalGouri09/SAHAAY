@@ -54,8 +54,12 @@ USE_ROAD_DISTANCE = True
 # project / development. For production, replace with your own hosted
 # OSRM instance or a paid provider (e.g. Google Distance Matrix API)
 # by editing get_road_distance_km() in app/core/matching.py.
-OSRM_BASE_URL = "https://router.project-osrm.org"
-ROAD_DISTANCE_TIMEOUT_SECONDS = 3
+OSRM_BASE_URL = os.environ.get(
+    "OSRM_BASE_URL", "https://router.project-osrm.org"
+).rstrip("/")
+ROAD_DISTANCE_TIMEOUT_SECONDS = float(
+    os.environ.get("ROAD_DISTANCE_TIMEOUT_SECONDS", "3")
+)
 
 # ---------------------------------------------------------------------
 # Auto-escalation

@@ -64,17 +64,22 @@ def check_escalation(payload: EscalationCheckRequest) -> EscalationCheckResponse
             donation_id=payload.donation_id,
             action="no_ngos_left",
             minutes_elapsed=minutes_elapsed,
-            message="All ranked NGOs have been exhausted. Manual intervention needed by the restaurant/admin.",
+            message=(
+                "No more eligible NGOs are available for this donation. Open "
+                "SAHAAY to review your options."
+            ),
         )
 
-    next_ngo_id = payload.ranked_ngo_ids[next_index]
     reason = "timed out" if payload.current_ngo_status == EscalationStatus.pending else "rejected the donation"
 
     return EscalationCheckResponse(
         donation_id=payload.donation_id,
         action="escalate",
-        next_ngo_id=next_ngo_id,
+        next_ngo_id=payload.ranked_ngo_ids[next_index],
         next_ngo_index=next_index,
         minutes_elapsed=minutes_elapsed,
-        message=f"Current NGO {reason}. Escalating offer to next-ranked NGO ({next_ngo_id}).",
+        message=(
+            f"The current NGO {reason}. The offer can now move to the next "
+            "eligible NGO."
+        ),
     )

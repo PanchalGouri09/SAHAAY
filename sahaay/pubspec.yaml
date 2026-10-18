@@ -44,6 +44,13 @@ dependencies:
   shared_preferences: ^2.3.2 # local demo-mode flag + light caching
   url_launcher: ^6.3.1       # opening PDF receipt links / maps app
 
+  # ---- Push notifications ----
+  # FirebaseMessaging delivers the push; flutter_local_notifications renders it
+  # while the app is in the foreground and creates the high-importance Android
+  # channel so the alert is audible.
+  firebase_messaging: ^15.2.10
+  flutter_local_notifications: ^18.0.1
+
   cupertino_icons: ^1.0.8
   path_provider: ^2.1.6
 

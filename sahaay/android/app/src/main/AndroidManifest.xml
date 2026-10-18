@@ -6,7 +6,7 @@
          optional so a user can decline precise location and still use SAHAAY.
          No ACCESS_BACKGROUND_LOCATION: SAHAAY does no background tracking. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
-    <uses-permission android:name="android.permission.FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
 
     <!-- Camera: attaching a food photo to a donation. -->
     <uses-permission android:name="android.permission.CAMERA"/>
@@ -24,7 +24,14 @@
     <application
         android:label="sahaay"
         android:name="${applicationName}"
+        android:usesCleartextTraffic="${allowCleartextTraffic}"
         android:icon="@mipmap/ic_launcher">
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_sahaay" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/sahaay_notification_color" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -52,6 +59,12 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- The Google Maps/Places API key. Injected by the Secrets Gradle
+             Plugin from android/secrets.properties (${MAPS_API_KEY}); required
+             for both SahaayGoogleMap rendering and Places Autocomplete. -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

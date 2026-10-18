@@ -21,6 +21,7 @@ class FoodCategory(str, Enum):
     dairy = "dairy"
     packaged = "packaged"
     raw = "raw"
+    other = "other"
 
 
 class SurplusPredictionRequest(BaseModel):
@@ -208,6 +209,36 @@ class DonationAcknowledgmentRequest(BaseModel):
     quantity_kg: float
     donation_datetime: datetime
     completion_status: str = Field(..., description="e.g. 'Completed'")
+
+    # Extended, real-only facts. All optional: the backend sends null for
+    # anything the database cannot supply, and the PDF renders "Not available"
+    # rather than inventing a value.
+    unit: Optional[str] = None
+    quantity_label: Optional[str] = None
+    servings: Optional[int] = None
+    order_id: Optional[str] = None
+    posted_at: Optional[datetime] = None
+    claimed_at: Optional[datetime] = None
+    picked_up_at: Optional[datetime] = None
+    received_at: Optional[datetime] = None
+    impact_points: Optional[int] = None
+    handover_verified_at: Optional[datetime] = None
+    handover_photo_url: Optional[str] = None
+    delivered_at: Optional[datetime] = None
+    meals_rescued: Optional[int] = None
+    food_weight_kg: Optional[float] = None
+    estimated_co2_saved: Optional[float] = None
+    volunteer_transport_used: Optional[bool] = None
+    volunteer_name: Optional[str] = None
+
+    # Completion/acknowledgement header facts. `completed_at` is the moment the
+    # donation was actually received; `handover_status` and `volunteer_role`
+    # are short, real descriptions supplied by the backend. `ngo_receipt_confirmed`
+    # is the NGO's own received/handover-verified signal.
+    completed_at: Optional[datetime] = None
+    handover_status: Optional[str] = None
+    volunteer_role: Optional[str] = None
+    ngo_receipt_confirmed: Optional[bool] = None
 
 
 class DonationAcknowledgmentResponse(BaseModel):

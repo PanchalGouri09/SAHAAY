@@ -22,6 +22,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import Settings
 from app.dependencies import get_current_firebase_user
 from app.main import app
 
@@ -124,10 +125,63 @@ def supabase(monkeypatch: pytest.MonkeyPatch) -> _FakeSupabase:
     ):
         monkeypatch.setattr(module, lambda: fake)
     app.dependency_overrides[get_current_firebase_user] = lambda: {
-        "uid": "firebase-uid-1"
+        "uid": "firebase-uid-1",
+        "email": "ngo@example.org",
+        "email_verified": True,
+        "phone_number": "+919876543210",
     }
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: Settings(firebase_phone_auth_enabled=True),
+    )
     yield fake
     app.dependency_overrides.clear()
+
+
+def _provider_user() -> dict:
+    return {
+        "id": "user-1",
+        "role": "provider",
+        "full_name": "Provider Contact",
+        "email": "provider@example.org",
+        "phone": "+91 9876543210",
+        "providers": [
+            {
+                "id": "provider-1",
+                "organization_name": "Test Kitchen",
+                "address": "1 Market Road",
+                "city": "Pune",
+                "latitude": 18.52,
+                "longitude": 73.85,
+            }
+        ],
+    }
+
+
+def _ngo_user() -> dict:
+    return {
+        "id": "user-1",
+        "role": "ngo",
+        "full_name": "NGO Contact",
+        "email": "ngo@example.org",
+        "phone": "+91 9876543210",
+        "ngos": [
+            {
+                "id": "ngo-1",
+                "organization_name": "Test Pantry",
+                "address": "2 Market Road",
+                "city": "Pune",
+                "latitude": 18.53,
+                "longitude": 73.86,
+                "available_from": "07:00",
+                "available_to": "22:00",
+                "max_capacity_kg": 25,
+                "preferred_food_types": ["Cooked Meals"],
+                "dietary_preferences": ["vegetarian"],
+                "verified": True,
+            }
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +278,14 @@ def test_ngo_profile_creation_succeeds(supabase) -> None:
             "organization_name": "Feed The City",
             "address": "45 Bandra West, Mumbai",
             "city": "Mumbai",
+            "latitude": 19.07,
+            "longitude": 72.87,
             "food_capacity": 200,
+            "max_capacity_kg": 50,
+            "preferred_food_types": ["Cooked Meals"],
+            "dietary_preferences": ["vegetarian"],
+            "available_from": "07:00",
+            "available_to": "22:00",
         },
     }
 
@@ -282,9 +343,7 @@ def test_profile_create_admin_role_is_403(supabase) -> None:
 # Donation lookup (app/routers/donations.py)
 # ---------------------------------------------------------------------------
 def test_donation_missing_row_returns_404(supabase) -> None:
-    supabase.table("users").insert(
-        {"id": "user-1", "role": "provider", "providers": [{"id": "provider-1"}]}
-    )
+    supabase.table("users").insert(_provider_user())
 
     response = client.get("/api/v1/donations/missing-donation-id")
 
@@ -293,9 +352,7 @@ def test_donation_missing_row_returns_404(supabase) -> None:
 
 
 def test_donation_found_row_returns_200(supabase) -> None:
-    supabase.table("users").insert(
-        {"id": "user-1", "role": "provider", "providers": [{"id": "provider-1"}]}
-    )
+    supabase.table("users").insert(_provider_user())
     supabase.table("donations").insert(
         {
             "id": "don-1",
@@ -339,9 +396,7 @@ def test_notification_found_row_marks_read(supabase) -> None:
 # Claim creation (app/routers/claims.py)
 # ---------------------------------------------------------------------------
 def test_claim_creation_returns_201_with_row(supabase) -> None:
-    supabase.table("users").insert(
-        {"id": "user-1", "role": "ngo", "ngos": [{"id": "ngo-1"}]}
-    )
+    supabase.table("users").insert(_ngo_user())
 
     response = client.post(
         "/api/v1/claims",
@@ -359,9 +414,7 @@ def test_claim_creation_returns_201_with_row(supabase) -> None:
 # Claim update (app/routers/claims.py)
 # ---------------------------------------------------------------------------
 def test_claim_missing_row_returns_404(supabase) -> None:
-    supabase.table("users").insert(
-        {"id": "user-1", "role": "ngo", "ngos": [{"id": "ngo-1"}]}
-    )
+    supabase.table("users").insert(_ngo_user())
 
     response = client.patch("/api/v1/claims/missing-claim", params={"status": "accepted"})
 
@@ -369,13 +422,22 @@ def test_claim_missing_row_returns_404(supabase) -> None:
     assert response.json()["detail"] == "Claim not found for this NGO."
 
 
-def test_claim_found_row_updates_status(supabase) -> None:
-    supabase.table("users").insert(
-        {"id": "user-1", "role": "ngo", "ngos": [{"id": "ngo-1"}]}
-    )
+def test_claim_found_row_updates_status_without_contact_verification(
+    supabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supabase.table("users").insert(_ngo_user())
     supabase.table("claims").insert(
         {"id": "claim-1", "ngo_id": "ngo-1", "status": "pending"}
     )
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: Settings(firebase_phone_auth_enabled=False),
+    )
+    app.dependency_overrides[get_current_firebase_user] = lambda: {
+        "uid": "firebase-uid-1",
+        "email": "ngo@example.org",
+        "email_verified": False,
+    }
 
     response = client.patch("/api/v1/claims/claim-1", params={"status": "accepted"})
 

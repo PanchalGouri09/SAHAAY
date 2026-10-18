@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 
 from app.dependencies import get_current_firebase_user, get_current_profile, require_role
 from app.main import app
+from app.services import donation_offers as offer_service
 from app.services.ai_client import AIClient, get_ai_client
 
 client = TestClient(app)
@@ -124,7 +125,21 @@ class _FakeSupabase:
     def seed(self, name: str, rows: list[dict]) -> None:
         target = self.table(name)
         for row in rows:
-            target._rows.append(dict(row))
+            seeded = dict(row)
+            target._rows.append(seeded)
+            if name == "ngos" and seeded.get("user_id"):
+                self.seed(
+                    "users",
+                    [
+                        {
+                            "id": seeded["user_id"],
+                            "role": "ngo",
+                            "full_name": "Test NGO Contact",
+                            "email": f"{seeded['user_id']}@example.org",
+                            "phone": "+91 9876543210",
+                        }
+                    ],
+                )
 
 
 class _MatchHandler:
@@ -181,6 +196,16 @@ class _MatchHandler:
 @pytest.fixture
 def supabase(monkeypatch: pytest.MonkeyPatch):
     fake = _FakeSupabase()
+
+    def persist(_client, *, donation_id, ranked_ngos):
+        candidates = offer_service._ranked_candidate_rows(ranked_ngos)
+        fake.seed(
+            "donation_match_candidates",
+            [{**candidate, "donation_id": donation_id} for candidate in candidates],
+        )
+        return {"status": "offered"}
+
+    monkeypatch.setattr(offer_service, "persist_ranked_candidates", persist)
     for module in (
         "app.dependencies.get_supabase_client",
         "app.routers.profile.get_supabase_client",
@@ -428,7 +453,14 @@ def test_ngo_profile_create_accepts_vehicle_available(ngo_auth) -> None:
                 "organization_name": "Feed The City",
                 "address": "45 Bandra West, Mumbai",
                 "city": "Mumbai",
+                "latitude": 19.07,
+                "longitude": 72.87,
                 "food_capacity": 200,
+                "max_capacity_kg": 50,
+                "preferred_food_types": ["Cooked Meals"],
+                "dietary_preferences": ["vegetarian"],
+                "available_from": "07:00",
+                "available_to": "22:00",
                 "vehicle_available": True,
             },
         },
@@ -449,6 +481,15 @@ def test_ngo_profile_create_defaults_to_unanswered(ngo_auth) -> None:
             "ngo": {
                 "organization_name": "Feed The City",
                 "address": "45 Bandra West, Mumbai",
+                "city": "Mumbai",
+                "latitude": 19.07,
+                "longitude": 72.87,
+                "food_capacity": 200,
+                "max_capacity_kg": 50,
+                "preferred_food_types": ["Cooked Meals"],
+                "dietary_preferences": ["vegetarian"],
+                "available_from": "07:00",
+                "available_to": "22:00",
             },
         },
     )
@@ -463,12 +504,16 @@ def test_ngo_profile_create_defaults_to_unanswered(ngo_auth) -> None:
 def _ngo_row(ngo_id: str, **overrides) -> dict:
     row = {
         "id": ngo_id,
+        "user_id": f"user-{ngo_id}",
         "organization_name": f"NGO {ngo_id}",
         "city": "Mumbai",
         "address": "Somewhere",
         "verified": True,
         "food_capacity": 200,
-        "preferred_food_types": ["vegetarian", "vegan"],
+        "max_capacity_kg": 25,
+        # Food categories (SAHAAY vocabulary) are separate from dietary prefs.
+        "preferred_food_types": ["Cooked Meals"],
+        "dietary_preferences": ["vegetarian"],
         "available_from": "07:00",
         "available_to": "22:00",
         "latitude": 19.07,
@@ -484,10 +529,12 @@ def _seed_matching_donation(supabase, **donation_overrides) -> str:
         "id": donation_id,
         "provider_id": _PROVIDER_ID,
         "status": "available",
+        "food_name": "Vegetable Rice",
+        "food_category": "Cooked Meals",
         "quantity": 10.0,
         "unit": "kg",
         "veg_type": "vegetarian",
-        "pickup_deadline": "2030-01-01T18:00:00Z",
+        "pickup_deadline": "2030-01-01T13:00:00Z",
         "latitude": 19.0,
         "longitude": 72.8,
     }

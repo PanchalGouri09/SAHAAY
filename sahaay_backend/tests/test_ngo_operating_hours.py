@@ -24,6 +24,8 @@ from fastapi.testclient import TestClient
 
 from app.dependencies import get_current_firebase_user, get_current_profile
 from app.main import app
+from app.routers.ai_features import _pickup_time_of
+from app.services import donation_offers as offer_service
 from app.services.ai_client import AIClient, get_ai_client
 
 client = TestClient(app)
@@ -31,6 +33,14 @@ client = TestClient(app)
 _USER_ID = "user-ngo-1"
 _NGO_ID = "ngo-1"
 _PROVIDER_ID = "provider-1"
+
+
+def test_pickup_deadline_is_compared_to_hours_in_india_local_time():
+    assert _pickup_time_of(
+        {"pickup_deadline": "2026-10-16T13:00:00+00:00"}
+    ) == "18:30"
+    assert _pickup_time_of({"pickup_deadline": "2026-10-16T18:30:00"}) == "18:30"
+    assert _pickup_time_of({"pickup_deadline": "invalid"}) is None
 
 
 class _RowResult(SimpleNamespace):
@@ -170,6 +180,16 @@ class _MatchHandler:
 @pytest.fixture
 def supabase(monkeypatch: pytest.MonkeyPatch):
     fake = _FakeSupabase()
+
+    def persist(_client, *, donation_id, ranked_ngos):
+        candidates = offer_service._ranked_candidate_rows(ranked_ngos)
+        fake.seed(
+            "donation_match_candidates",
+            [{**candidate, "donation_id": donation_id} for candidate in candidates],
+        )
+        return {"status": "offered"}
+
+    monkeypatch.setattr(offer_service, "persist_ranked_candidates", persist)
     for module in (
         "app.dependencies.get_supabase_client",
         "app.routers.profile.get_supabase_client",
@@ -265,6 +285,8 @@ def ai(supabase):
 # NGO operating-hours schema: profile create
 # ---------------------------------------------------------------------------
 def _ngo_create_payload(**ngos) -> dict:
+    # A complete, matchable NGO profile. Operating hours are supplied by the
+    # caller so the hours-specific tests can set, omit, or malform them.
     base = {
         "full_name": "NGO Coordinator",
         "email": "ngo@example.org",
@@ -273,7 +295,14 @@ def _ngo_create_payload(**ngos) -> dict:
             "organization_name": "Feed The City",
             "address": "45 Bandra West, Mumbai",
             "city": "Mumbai",
+            "latitude": 19.07,
+            "longitude": 72.87,
             "food_capacity": 200,
+            "max_capacity_kg": 50,
+            "preferred_food_types": ["Cooked Meals"],
+            "dietary_preferences": ["vegetarian"],
+            "available_from": "07:00",
+            "available_to": "22:00",
         },
     }
     base["ngo"].update(ngos)
@@ -296,20 +325,24 @@ def test_ngo_profile_create_persists_operating_hours(ngo_auth) -> None:
 
 
 def test_ngo_profile_create_allows_missing_hours(ngo_auth) -> None:
-    # Optional by design: an NGO may not have hours yet; matching just excludes it.
-    response = client.post("/api/v1/profile", json=_ngo_create_payload())
+    # Profile creation can precede matching setup; incomplete NGOs are excluded
+    # later by the matching eligibility filter.
+    payload = _ngo_create_payload()
+    payload["ngo"].pop("available_from")
+    payload["ngo"].pop("available_to")
+    response = client.post("/api/v1/profile", json=payload)
 
     assert response.status_code == 201
-    rows = ngo_auth.table("ngos")._rows
-    assert rows[0].get("available_from") is None
-    assert rows[0].get("available_to") is None
+    assert ngo_auth.table("ngos")._rows[0].get("available_from") is None
+    assert ngo_auth.table("ngos")._rows[0].get("available_to") is None
 
 
 def test_ngo_profile_create_partial_hours_is_422(ngo_auth) -> None:
-    response = client.post(
-        "/api/v1/profile",
-        json=_ngo_create_payload(available_from="07:00"),
-    )
+    # Supplying only one of the two hours is a partial, unusable window: the
+    # pair must be given together or both left empty.
+    payload = _ngo_create_payload(available_from="07:00")
+    payload["ngo"].pop("available_to")
+    response = client.post("/api/v1/profile", json=payload)
 
     assert response.status_code == 422
     assert ngo_auth.table("ngos")._rows == []
@@ -469,10 +502,11 @@ def _seed_donation(fake, **overrides) -> None:
         "id": "don-1",
         "provider_id": _PROVIDER_ID,
         "food_name": "Vegetable Rice",
+        "food_category": "Cooked Meals",
         "quantity": 10.0,
         "unit": "kg",
         "veg_type": "vegetarian",
-        "pickup_deadline": "2026-09-30T18:30:00+00:00",
+        "pickup_deadline": "2026-09-30T13:00:00+00:00",
         "prepared_at": "2026-09-29T12:00:00+00:00",
         "status": "available",
         "latitude": 18.52,
@@ -485,16 +519,30 @@ def _seed_donation(fake, **overrides) -> None:
 def _seed_ngo(fake, ngo_id: str, *, hours: tuple[str, str] | None = ("07:00", "22:00"), **overrides) -> None:
     row = {
         "id": ngo_id,
+        "user_id": f"user-{ngo_id}",
         "organization_name": f"NGO {ngo_id}",
+        "address": "1 Market Road",
+        "city": "Pune",
         "latitude": 18.53,
         "longitude": 73.86,
         "food_capacity": 50,
-        "preferred_food_types": ["vegetarian", "vegan"],
+        "max_capacity_kg": 50,
+        # Food categories (SAHAAY vocabulary) are kept strictly separate from
+        # dietary preferences, which live in their own column.
+        "preferred_food_types": ["Cooked Meals"],
+        "dietary_preferences": ["vegetarian"],
         "verified": True,
     }
     if hours is not None:
         row["available_from"], row["available_to"] = hours
     row.update(overrides)
+    fake.table("users")._rows.append({
+        "id": row["user_id"],
+        "role": "ngo",
+        "full_name": f"Contact {ngo_id}",
+        "email": f"{ngo_id}@example.org",
+        "phone": "+91 9876543210",
+    })
     fake.table("ngos")._rows.append(row)
 
 
@@ -505,7 +553,8 @@ def test_match_sends_real_ngo_hours_to_ai(ai, supabase) -> None:
     response = client.post("/api/v1/donations/don-1/match")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    body = response.json()
+    assert body["status"] == "ok"
     match_req = next(r for r in ai.requests if r.url.path == "/api/v1/matching/rank-ngos")
     payload = json.loads(match_req.content)
     candidate = payload["candidate_ngos"][0]
@@ -527,6 +576,28 @@ def test_match_excludes_ngo_without_hours_but_keeps_one_with(ai, supabase) -> No
     match_req = next(r for r in ai.requests if r.url.path == "/api/v1/matching/rank-ngos")
     candidates = json.loads(match_req.content)["candidate_ngos"]
     assert {c["ngo_id"] for c in candidates} == {"ngo-has-hours"}
+
+
+def test_match_excludes_candidates_without_food_time_or_capacity_fit(ai, supabase) -> None:
+    _seed_donation(supabase, provider_id=_PROVIDER_ID)
+    _seed_ngo(supabase, "eligible")
+    _seed_ngo(supabase, "wrong-food", preferred_food_types=["vegan"])
+    _seed_ngo(supabase, "too-small", max_capacity_kg=5)
+    _seed_ngo(supabase, "outside-hours", hours=("07:00", "18:00"))
+    _seed_ngo(supabase, "invalid-location", latitude=95.0, longitude=73.85)
+
+    response = client.post("/api/v1/donations/don-1/match")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    match_request = next(
+        request
+        for request in ai.requests
+        if request.url.path == "/api/v1/matching/rank-ngos"
+    )
+    candidates = json.loads(match_request.content)["candidate_ngos"]
+    assert [candidate["ngo_id"] for candidate in candidates] == ["eligible"]
     assert body["ranked_ngos"]  # real matching results for the candidate with hours
 
 
@@ -540,7 +611,7 @@ def test_match_all_ngos_missing_hours_returns_insufficient_data(ai, supabase) ->
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "insufficient_data"
-    assert "hours" in body["reason"]
+    assert "completed NGO profiles" in body["reason"]
     assert not any(r.url.path == "/api/v1/matching/rank-ngos" for r in ai.requests)
 
 

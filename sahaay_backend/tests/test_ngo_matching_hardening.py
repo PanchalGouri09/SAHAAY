@@ -21,11 +21,14 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
 from app.dependencies import get_current_profile
 from app.main import app
+from app.schemas.ai import NGOScoreBreakdown
 from app.services.ai_client import AIClient, get_ai_client
+from app.services import donation_offers as offer_service
 
 client_session = TestClient(app)
 
@@ -69,6 +72,10 @@ class _FakeTable:
         self._filters.append(("in", key, values))
         return self
 
+    def or_(self, expression: str) -> "_FakeTable":
+        self._filters.append(("or", expression))
+        return self
+
     def maybe_single(self) -> "_FakeTable":
         self._single = "maybe"
         return self
@@ -82,7 +89,26 @@ class _FakeTable:
 
     def _filtered(self) -> list[dict]:
         rows = list(self._rows)
-        for kind, key, value in self._filters:
+        for filter_item in self._filters:
+            kind = filter_item[0]
+            if kind == "or":
+                value = filter_item[1]
+                alternatives = []
+                for clause in value.split(","):
+                    field, operator, raw = clause.split(".", 2)
+                    if operator == "eq":
+                        expected = raw == "true" if raw in {"true", "false"} else raw
+                        alternatives.append((field, expected))
+                rows = [
+                    row
+                    for row in rows
+                    if any(
+                        row.get(field) == expected
+                        for field, expected in alternatives
+                    )
+                ]
+                continue
+            _, key, value = filter_item
             if kind == "eq":
                 rows = [r for r in rows if r.get(key) == value]
             elif kind == "in":
@@ -108,6 +134,19 @@ class _FakeSupabase:
         return _FakeTable(name, self.tables.setdefault(name, []))
 
     def seed(self, name: str, rows: list[dict]) -> None:
+        if name == "ngos":
+            for row in rows:
+                user_id = row.get("user_id") or f"user-{row['id']}"
+                row.setdefault("user_id", user_id)
+                self.tables.setdefault("users", []).append(
+                    {
+                        "id": user_id,
+                        "role": "ngo",
+                        "full_name": f"Contact {row['id']}",
+                        "email": f"{row['id']}@example.org",
+                        "phone": "+91 9876543210",
+                    }
+                )
         self.tables.setdefault(name, []).extend(list(rows))
 
 
@@ -181,6 +220,20 @@ def ctx(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("app.routers.ai_features.get_supabase_client", lambda: fake)
     ai = _AIHandler()
     app.dependency_overrides[get_current_profile] = lambda: _provider_profile()
+
+    def persist(_client, *, donation_id, ranked_ngos):
+        candidates = offer_service._ranked_candidate_rows(ranked_ngos)
+        fake.seed(
+            "donation_match_candidates",
+            [{**candidate, "donation_id": donation_id} for candidate in candidates],
+        )
+        return {"status": "offered"}
+
+    monkeypatch.setattr(
+        offer_service,
+        "persist_ranked_candidates",
+        persist,
+    )
     app.dependency_overrides[get_ai_client] = lambda: AIClient(
         base_url="http://ai.test",
         timeout=5.0,
@@ -196,10 +249,11 @@ def _donation(**overrides) -> dict:
         "id": "don-1",
         "provider_id": _PROVIDER_ID,
         "food_name": "Vegetable Rice",
+        "food_category": "Cooked Meals",
         "quantity": 10.0,
         "unit": "kg",
         "veg_type": "vegetarian",
-        "pickup_deadline": "2026-09-30T18:30:00+00:00",
+        "pickup_deadline": "2026-09-30T13:00:00+00:00",
         "prepared_at": "2026-09-29T12:00:00+00:00",
         "status": "available",
         "expiry_time": future,
@@ -213,6 +267,7 @@ def _donation(**overrides) -> dict:
 def _ngo(ngo_id: str = "ngo-1", **overrides) -> dict:
     row = {
         "id": ngo_id,
+        "user_id": f"user-{ngo_id}",
         "organization_name": f"NGO {ngo_id}",
         "city": "Pune",
         "address": "12 NGO Road",
@@ -220,7 +275,10 @@ def _ngo(ngo_id: str = "ngo-1", **overrides) -> dict:
         "latitude": 18.53,
         "longitude": 73.86,
         "food_capacity": 50,
-        "preferred_food_types": ["vegetarian", "vegan"],
+        "max_capacity_kg": 50,
+        # Food categories (SAHAAY vocabulary) are separate from dietary prefs.
+        "preferred_food_types": ["Cooked Meals"],
+        "dietary_preferences": ["vegetarian"],
         "verified": True,
         "available_from": "07:00",
         "available_to": "22:00",
@@ -354,7 +412,7 @@ def test_match_unknown_ngo_id_from_ai_is_dropped(ctx) -> None:
             "pickup_time_feasibility_score": 100.0,
             "restaurant_reliability_score": 91.5,
             "final_score": 99.0,
-            "rank": 0,
+            "rank": 2,
         },
     ]
 
@@ -367,7 +425,7 @@ def test_match_unknown_ngo_id_from_ai_is_dropped(ctx) -> None:
     assert ids == ["ngo-real"]
 
 
-def test_match_duplicate_ngo_id_from_ai_is_deduped(ctx) -> None:
+def test_match_incomplete_ai_ranking_is_rejected(ctx) -> None:
     ctx.fake.seed("donations", [_donation()])
     ctx.fake.seed("ngos", [_ngo("ngo-a"), _ngo("ngo-b")])
     ctx.ai.ranked_override = [
@@ -401,24 +459,76 @@ def test_match_duplicate_ngo_id_from_ai_is_deduped(ctx) -> None:
 
     response = client_session.post("/api/v1/donations/don-1/match")
 
-    assert response.status_code == 200
-    body = response.json()
-    ids = [item["ngo_id"] for item in body["ranked_ngos"]]
-    assert ids == ["ngo-a"]
-    assert body["ranked_ngos"][0]["final_score"] == 95.0
+    assert response.status_code == 502
+    assert "incomplete" in response.json()["detail"]
 
 
-def test_match_empty_ranking_from_ai_returns_ok_with_empty_list(ctx) -> None:
+def test_match_empty_ranking_for_eligible_candidates_is_rejected(ctx) -> None:
     ctx.fake.seed("donations", [_donation()])
     ctx.fake.seed("ngos", [_ngo("ngo-a")])
     ctx.ai.ranked_override = []
 
     response = client_session.post("/api/v1/donations/don-1/match")
 
+    assert response.status_code == 502
+    assert "incomplete" in response.json()["detail"]
+
+
+def test_other_food_category_matches_only_ngos_that_accept_other(ctx) -> None:
+    ctx.fake.seed("donations", [_donation(food_category="Other")])
+    ctx.fake.seed("ngos", [_ngo("ngo-other", preferred_food_types=["Other"])])
+
+    response = client_session.post("/api/v1/donations/don-1/match")
+
     assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "ok"
-    assert body["ranked_ngos"] == []
+    assert response.json()["ranked_ngos"][0]["ngo_id"] == "ngo-other"
+
+
+def test_matching_endpoint_persists_and_starts_ranked_offers(ctx, monkeypatch) -> None:
+    ctx.fake.seed("donations", [_donation()])
+    ctx.fake.seed("ngos", [_ngo("ngo-a"), _ngo("ngo-b")])
+    saved = []
+
+    def persist(_client, *, donation_id, ranked_ngos):
+        saved.append({"donation_id": donation_id, "ranked_ngos": ranked_ngos})
+        candidates = offer_service._ranked_candidate_rows(ranked_ngos)
+        ctx.fake.seed(
+            "donation_match_candidates",
+            [{**candidate, "donation_id": donation_id} for candidate in candidates],
+        )
+        return {"status": "offered"}
+
+    monkeypatch.setattr(
+        offer_service,
+        "persist_ranked_candidates",
+        persist,
+    )
+
+    response = client_session.post("/api/v1/donations/don-1/match")
+
+    assert response.status_code == 200
+    assert response.json()["offer_sequence"] == {"status": "offered"}
+    assert len(saved) == 1
+    assert [row["match_rank"] for row in saved[0]["ranked_ngos"]] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    ("donation_type", "accepted_types", "expected"),
+    [
+        ("veg", ["vegetarian"], True),
+        ("vegan", ["vegetarian"], True),
+        ("veg", ["vegan"], False),
+        ("non_veg", ["vegetarian"], False),
+        ("any", ["vegetarian"], False),
+        ("any", ["vegetarian", "non_vegetarian"], True),
+        ("non_veg", ["any"], True),
+    ],
+)
+def test_dietary_compatibility_is_explicit(donation_type, accepted_types, expected):
+    from app.routers.ai_features import _dietary_accepted, _dietary_compatible
+
+    accepted = _dietary_accepted(accepted_types)
+    assert _dietary_compatible(donation_type, accepted) is expected
 
 
 # ===========================================================================
@@ -436,7 +546,7 @@ def test_match_ranked_ngo_enriched_with_real_fields(ctx) -> None:
                 address="12 NGO Road",
                 phone="+91-1234567890",
                 food_capacity=80,
-                preferred_food_types=["vegetarian"],
+                preferred_food_types=["Cooked Meals"],
             )
         ],
     )
@@ -450,6 +560,7 @@ def test_match_ranked_ngo_enriched_with_real_fields(ctx) -> None:
     assert item["ngo_id"] == "ngo-1"
     assert item["final_score"] == 87.5
     assert item["distance_km"] == 3.0
+    assert item["distance_source"] == "straight_line"
     assert item["rank"] == 1
     assert item["ngo"]["organization_name"] == "Helping Hands Trust"
     assert item["ngo"]["city"] == "Pune"
@@ -457,20 +568,108 @@ def test_match_ranked_ngo_enriched_with_real_fields(ctx) -> None:
     assert item["ngo"]["phone"] == "+91-1234567890"
     assert item["ngo"]["verified"] is True
     assert item["ngo"]["food_capacity"] == 80
-    assert item["ngo"]["preferred_food_types"] == ["vegetarian"]
+    assert item["ngo"]["max_capacity_kg"] == 50
+    assert item["ngo"]["preferred_food_types"] == ["Cooked Meals"]
     assert item["ngo"]["available_from"] == "07:00"
     assert item["ngo"]["available_to"] == "22:00"
 
 
-def test_match_unverified_ngo_excluded_from_candidates(ctx) -> None:
-    # A non-verified NGO is never a candidate — the AI is not even called,
-    # and its identity is never surfaced to the provider.
+@pytest.mark.parametrize(
+    "legacy_flag",
+    [False, None, "missing"],
+)
+def test_complete_ngo_is_candidate_independent_of_legacy_verification(
+    ctx, legacy_flag
+) -> None:
     ctx.fake.seed("donations", [_donation()])
-    ctx.fake.seed("ngos", [_ngo("ngo-1", verified=False)])
+    ngo = _ngo("ngo-1", demo_verified=False)
+    if legacy_flag == "missing":
+        ngo.pop("verified")
+    else:
+        ngo["verified"] = legacy_flag
+    ctx.fake.seed(
+        "ngos",
+        [ngo],
+    )
 
     response = client_session.post("/api/v1/donations/don-1/match")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "insufficient_data"
+    assert body["status"] == "ok"
+    assert [item["ngo_id"] for item in body["ranked_ngos"]] == ["ngo-1"]
+    assert "/api/v1/matching/rank-ngos" in ctx.ai.paths_hit
+
+
+def test_legacy_demo_flag_does_not_make_incomplete_ngo_matchable(ctx) -> None:
+    ctx.fake.seed("donations", [_donation()])
+    ctx.fake.seed("ngos", [_ngo("ngo-demo", demo_verified=True, latitude=None)])
+
+    response = client_session.post("/api/v1/donations/don-1/match")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "insufficient_data"
     assert "/api/v1/matching/rank-ngos" not in ctx.ai.paths_hit
+
+
+def test_profile_complete_ngo_is_candidate_without_any_legacy_flag(ctx) -> None:
+    ctx.fake.seed("donations", [_donation()])
+    ngo = _ngo("ngo-1")
+    ngo.pop("verified")
+    ngo.pop("demo_verified", None)
+    ctx.fake.seed("ngos", [ngo])
+
+    matched = client_session.post("/api/v1/donations/don-1/match")
+
+    assert matched.status_code == 200
+    assert matched.json()["status"] == "ok"
+    assert [item["ngo_id"] for item in matched.json()["ranked_ngos"]] == ["ngo-1"]
+    assert "verified" not in ctx.fake.tables["ngos"][0]
+    assert len(ctx.fake.tables["donation_match_candidates"]) == 1
+
+
+def test_match_keeps_valid_zero_coordinates(ctx) -> None:
+    provider = _provider_profile()
+    provider["providers"][0].update(latitude=0.0, longitude=0.0)
+    app.dependency_overrides[get_current_profile] = lambda: provider
+    ctx.fake.seed("donations", [_donation(latitude=18.52, longitude=73.85)])
+    ctx.fake.seed("ngos", [_ngo("ngo-zero", latitude=0.0, longitude=0.0)])
+
+    response = client_session.post("/api/v1/donations/don-1/match")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    request = next(
+        request
+        for request in ctx.ai.requests
+        if request.url.path == "/api/v1/matching/rank-ngos"
+    )
+    payload = json.loads(request.content)
+    assert payload["donation"]["restaurant_latitude"] == 0.0
+    assert payload["donation"]["restaurant_longitude"] == 0.0
+    assert payload["candidate_ngos"][0]["latitude"] == 0.0
+    assert payload["candidate_ngos"][0]["longitude"] == 0.0
+
+
+def test_match_response_schema_rejects_missing_or_out_of_range_scores() -> None:
+    score = {
+        "ngo_id": "ngo-1",
+        "ngo_name": "Helping Hands",
+        "distance_km": 2.5,
+        "distance_source": "straight_line",
+        "distance_score": 90.0,
+        "quantity_fit_score": 80.0,
+        "dietary_compatibility_score": 100.0,
+        "pickup_time_feasibility_score": 100.0,
+        "restaurant_reliability_score": 88.0,
+        "final_score": 91.0,
+        "rank": 1,
+    }
+    parsed = NGOScoreBreakdown.model_validate(score)
+    assert parsed.model_dump()["final_score"] == 91.0
+    with pytest.raises(ValidationError):
+        NGOScoreBreakdown.model_validate({**score, "final_score": 101.0})
+    with pytest.raises(ValidationError):
+        NGOScoreBreakdown.model_validate(
+            {key: value for key, value in score.items() if key != "final_score"}
+        )
