@@ -6856,9 +6856,6 @@ class _ProviderDonationsTab extends StatelessWidget {
                                             claim['delivery'] as Map)
                                         : null,
                                   ),
-                              if (awaitingHandover)
-                                _VerifyHandoverAction(
-                                    donation: donation, onVerified: onRefresh),
                               if (available)
                                 _DonationAiActions(donation: donation),
                             ],
@@ -8073,156 +8070,6 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
               ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// Opens the provider-side handover confirmation flow for a donation whose
-/// claim is waiting on pickup. The code is entered by the provider at handover.
-class _VerifyHandoverAction extends StatelessWidget {
-  final Donation donation;
-  final Future<void> Function()? onVerified;
-  const _VerifyHandoverAction({required this.donation, this.onVerified});
-
-  @override
-  Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: SizedBox(
-        height: 34,
-        child: OutlinedButton.icon(
-          onPressed: () async {
-            final verified = await Navigator.of(context).push<bool>(
-              MaterialPageRoute(
-                  builder: (_) =>
-                      ProviderHandoverVerifyScreen(donation: donation)),
-            );
-            if (verified == true && onVerified != null) {
-              await onVerified!();
-            }
-          },
-          icon: const Icon(Icons.verified_outlined, size: 16),
-          label: const Text('Verify Handover',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-        ),
-      ),
-    );
-  }
-}
-
-/// Provider-side handover confirmation. The provider enters the one-time code
-/// shown by the receiving NGO (or the delivering volunteer) at pickup; the
-/// backend validates it and completes the donation. Failure states mirror the
-/// backend: a wrong code reports the remaining attempts, an expired code asks
-/// for a fresh one, and a locked code reports too many attempts.
-class ProviderHandoverVerifyScreen extends StatefulWidget {
-  final Donation donation;
-  const ProviderHandoverVerifyScreen({super.key, required this.donation});
-
-  @override
-  State<ProviderHandoverVerifyScreen> createState() =>
-      _ProviderHandoverVerifyScreenState();
-}
-
-class _ProviderHandoverVerifyScreenState
-    extends State<ProviderHandoverVerifyScreen> {
-  final _codeController = TextEditingController();
-  bool _verifying = false;
-  bool _verified = false;
-  String? _error;
-
-  @override
-  void dispose() {
-    _codeController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _verify() async {
-    final code = _codeController.text.trim();
-    if (code.isEmpty) {
-      setState(() => _error = 'Enter the handover code.');
-      return;
-    }
-    setState(() {
-      _verifying = true;
-      _error = null;
-    });
-    try {
-      final result = await context
-          .read<AppState>()
-          .api
-          .verifyHandoverCode(widget.donation.id, code);
-      if (!mounted) return;
-      setState(() {
-        _verified = result['handover_verified'] == true ||
-            result['already_verified'] == true;
-        _verifying = false;
-      });
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.message.isNotEmpty
-            ? e.message
-            : 'That handover code is not correct. Please try again.';
-        _verifying = false;
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final c = AppColors.of(context);
-    final d = widget.donation;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Verify Handover')),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(AppSpacing.lg),
-        child:
-            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          Text(d.foodName, style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 4),
-          Text('${d.quantityKg.toStringAsFixed(0)} kg • ${d.servings} servings',
-              style: TextStyle(color: c.textSecondary)),
-          const SizedBox(height: AppSpacing.lg),
-          if (_verified) ...[
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(AppSpacing.md),
-                child: Row(children: [
-                  Icon(Icons.verified, color: c.green),
-                  const SizedBox(width: 8),
-                  const Expanded(
-                      child: Text('Handover verified successfully. The '
-                          'donation is complete.')),
-                ]),
-              ),
-            ),
-            const SizedBox(height: AppSpacing.lg),
-            PrimaryButton(
-                label: 'DONE',
-                onPressed: () => Navigator.of(context).pop(true)),
-          ] else ...[
-            Text(
-              'Enter the one-time code provided by the receiving NGO to '
-              'confirm the physical handover.',
-              style: TextStyle(fontSize: 13, color: c.textSecondary),
-            ),
-            const SizedBox(height: 16),
-            AppInputField(
-              label: 'Handover code',
-              controller: _codeController,
-              keyboardType: TextInputType.number,
-              prefixIcon: Icons.lock_outline,
-              helperText: _error,
-            ),
-            const SizedBox(height: 12),
-            PrimaryButton(
-                label: 'VERIFY HANDOVER',
-                onPressed: _verifying ? null : _verify,
-                isLoading: _verifying),
-          ],
-        ]),
       ),
     );
   }
@@ -10970,10 +10817,10 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(
-            widget.viewerRole == UserRole.ngo
-                ? 'Generate a one-time code and share it with the provider at '
-                    'pickup. Enter the code below to verify the handover.'
-                : 'Enter the one-time code shared by the NGO to verify the '
+            widget.viewerRole == UserRole.provider
+                ? 'Generate a one-time code and share it with the NGO at '
+                    'pickup. The NGO will enter it to verify the handover.'
+                : 'Enter the one-time code shared by the provider to verify the '
                     'handover.',
             style: TextStyle(fontSize: 12.5, color: c.textSecondary),
           ),
@@ -11002,7 +10849,7 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
             ],
             const SizedBox(height: 12),
           ] else if (_activeCodeUnavailable &&
-              widget.viewerRole == UserRole.ngo) ...[
+              widget.viewerRole == UserRole.provider) ...[
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -11026,7 +10873,7 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
             ),
             const SizedBox(height: 12),
           ],
-          if (widget.viewerRole == UserRole.ngo)
+          if (widget.viewerRole == UserRole.provider)
             SecondaryButton(
               label: _activeCodeUnavailable
                   ? 'WAIT FOR CODE EXPIRY'
@@ -11041,18 +10888,20 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
                   : _generateCode,
               isLoading: _generatingCode,
             ),
-          const SizedBox(height: 14),
-          AppInputField(
-            label: 'Enter handover code',
-            controller: _otpInputController,
-            keyboardType: TextInputType.number,
-            prefixIcon: Icons.lock_outline,
-            helperText: _otpError,
-          ),
-          const SizedBox(height: 12),
-          PrimaryButton(
-              label: 'VERIFY & CONFIRM HANDOVER',
-              onPressed: _verifying ? null : _confirmHandover),
+          if (widget.viewerRole == UserRole.ngo) ...[
+            const SizedBox(height: 14),
+            AppInputField(
+              label: 'Enter handover code',
+              controller: _otpInputController,
+              keyboardType: TextInputType.number,
+              prefixIcon: Icons.lock_outline,
+              helperText: _otpError,
+            ),
+            const SizedBox(height: 12),
+            PrimaryButton(
+                label: 'VERIFY & CONFIRM HANDOVER',
+                onPressed: _verifying ? null : _confirmHandover),
+          ],
         ]),
       ),
     );

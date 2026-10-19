@@ -761,7 +761,7 @@ void main() {
     testWidgets(
         'active handover code cannot be regenerated and can be refreshed',
         (tester) async {
-      final api = _FakeApi(profile: _ngoProfile())
+      final api = _FakeApi(profile: _providerProfile())
         ..handoverState = {
           'handover_verified': false,
           'handover_verified_at': null,
@@ -787,7 +787,13 @@ void main() {
       );
       _tallScreen(tester);
       await tester.pumpWidget(
-        _appWithState(ClaimedDonationDashboard(donation: donation), api),
+        _appWithState(
+          ClaimedDonationDashboard(
+            donation: donation,
+            viewerRole: UserRole.provider,
+          ),
+          api,
+        ),
       );
       await tester.pumpAndSettle();
 
@@ -1927,10 +1933,46 @@ void main() {
       expect(find.text('Claimed Donation'), findsOneWidget);
       expect(find.text('Claimed'), findsOneWidget);
       expect(find.text('accepted'), findsOneWidget);
-      expect(find.text('GENERATE HANDOVER CODE'), findsNothing);
-      expect(find.text('VERIFY & CONFIRM HANDOVER'), findsOneWidget);
+      expect(find.text('GENERATE HANDOVER CODE'), findsOneWidget);
+      expect(find.text('Enter handover code'), findsNothing);
+      expect(find.text('VERIFY & CONFIRM HANDOVER'), findsNothing);
       expect(find.text('12 Main Road, Pune'), findsOneWidget);
       expect(find.text('donation-1'), findsNothing);
+    });
+
+    testWidgets('NGO enters and verifies the provider-generated code',
+        (tester) async {
+      final api = _FakeApi(profile: _ngoProfile())
+        ..claims = [
+          {
+            'donation_id': 'donation-ngo-handover',
+            'status': 'accepted',
+            'donation': {
+              'id': 'donation-ngo-handover',
+              'food_name': 'Rice meals',
+              'status': 'claimed',
+            },
+          },
+        ];
+      final donation = Donation.fromBackend({
+        'id': 'donation-ngo-handover',
+        'food_name': 'Rice meals',
+        'status': 'claimed',
+      });
+
+      _tallScreen(tester);
+      await tester.pumpWidget(_appWithState(
+        ClaimedDonationDashboard(
+          donation: donation,
+          viewerRole: UserRole.ngo,
+        ),
+        api,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('GENERATE HANDOVER CODE'), findsNothing);
+      expect(find.text('Enter handover code'), findsOneWidget);
+      expect(find.text('VERIFY & CONFIRM HANDOVER'), findsOneWidget);
     });
 
     testWidgets('uses an honest fallback when NGO display name is missing',

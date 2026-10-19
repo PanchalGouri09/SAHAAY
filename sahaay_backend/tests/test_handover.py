@@ -347,6 +347,14 @@ def _stored_claim(fake: _FakeSupabase) -> dict:
     return fake.store["claims"][0]
 
 
+def _act_as_provider(fake: _FakeSupabase) -> None:
+    fake.store["users"][0]["role"] = "provider"
+
+
+def _act_as_ngo(fake: _FakeSupabase) -> None:
+    fake.store["users"][0]["role"] = "ngo"
+
+
 # ---------------------------------------------------------------------------
 # Handover state
 # ---------------------------------------------------------------------------
@@ -368,12 +376,23 @@ def test_handover_state_404_for_another_ngos_claim(supabase) -> None:
     assert response.status_code == 404
 
 
-def test_provider_can_read_owned_handover_state_but_only_ngo_can_issue_code(supabase) -> None:
+def test_provider_can_read_and_generate_for_owned_claim(supabase) -> None:
     _seed_ngo(supabase, role="provider")
     _seed_claim(supabase)
 
     assert client.get("/api/v1/donations/don-1/handover").status_code == 200
-    assert client.post("/api/v1/donations/don-1/handover/code").status_code == 403
+    response = client.post("/api/v1/donations/don-1/handover/code")
+    assert response.status_code == 200
+    assert response.json()["handover_code"].isdigit()
+
+
+def test_ngo_cannot_generate_handover_code(supabase) -> None:
+    _seed_ngo(supabase)
+    _seed_claim(supabase)
+
+    response = client.post("/api/v1/donations/don-1/handover/code")
+
+    assert response.status_code == 403
 
 
 def test_provider_claims_include_owned_donation_and_safe_ngo_display_data(supabase) -> None:
@@ -453,7 +472,7 @@ def test_handover_state_reflects_verified_and_photo(supabase) -> None:
 # Code generation
 # ---------------------------------------------------------------------------
 def test_generate_code_returns_4digit_code_and_stores_hash_only(supabase) -> None:
-    _seed_ngo(supabase)
+    _seed_ngo(supabase, role="provider")
     _seed_claim(supabase)
 
     response = client.post("/api/v1/donations/don-1/handover/code")
@@ -477,7 +496,7 @@ def test_generate_code_returns_4digit_code_and_stores_hash_only(supabase) -> Non
 
 
 def test_generate_code_rejected_when_already_verified(supabase) -> None:
-    _seed_ngo(supabase)
+    _seed_ngo(supabase, role="provider")
     _seed_claim(supabase, handover_verified_at="2026-10-01T11:00:00+00:00")
 
     response = client.post("/api/v1/donations/don-1/handover/code")
@@ -486,7 +505,7 @@ def test_generate_code_rejected_when_already_verified(supabase) -> None:
 
 
 def test_generate_code_rejected_for_closed_claim(supabase) -> None:
-    _seed_ngo(supabase)
+    _seed_ngo(supabase, role="provider")
     _seed_claim(supabase, status="cancelled")
 
     response = client.post("/api/v1/donations/don-1/handover/code")
@@ -495,7 +514,7 @@ def test_generate_code_rejected_for_closed_claim(supabase) -> None:
 
 
 def test_generate_code_requires_accepted_claim(supabase) -> None:
-    _seed_ngo(supabase)
+    _seed_ngo(supabase, role="provider")
     _seed_claim(supabase, status="pending")
 
     response = client.post("/api/v1/donations/don-1/handover/code")
@@ -507,7 +526,7 @@ def test_generate_code_requires_accepted_claim(supabase) -> None:
 def test_generate_code_works_without_firebase_phone_auth(
     supabase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _seed_ngo(supabase)
+    _seed_ngo(supabase, role="provider")
     _seed_claim(supabase)
     settings = Settings(firebase_phone_auth_enabled=False)
     monkeypatch.setattr("app.config.get_settings", lambda: settings)
@@ -527,7 +546,7 @@ def test_generate_code_works_without_firebase_phone_auth(
 
 
 def test_generate_code_still_requires_matching_verified_email(supabase) -> None:
-    _seed_ngo(supabase)
+    _seed_ngo(supabase, role="provider")
     _seed_claim(supabase)
     app.dependency_overrides[get_current_firebase_user] = lambda: {
         "uid": "ngo-uid",
@@ -545,7 +564,7 @@ def test_generate_code_still_requires_matching_verified_email(supabase) -> None:
 
 
 def test_generate_code_does_not_replace_an_active_code(supabase) -> None:
-    _seed_ngo(supabase)
+    _seed_ngo(supabase, role="provider")
     _seed_claim(supabase)
 
     first = client.post("/api/v1/donations/don-1/handover/code")
@@ -561,7 +580,7 @@ def test_generate_code_does_not_replace_an_active_code(supabase) -> None:
 def test_concurrent_code_generation_issues_only_one_active_code(supabase) -> None:
     from concurrent.futures import ThreadPoolExecutor
 
-    _seed_ngo(supabase)
+    _seed_ngo(supabase, role="provider")
     _seed_claim(supabase)
 
     def generate():
@@ -581,7 +600,9 @@ def test_concurrent_code_generation_issues_only_one_active_code(supabase) -> Non
 # Verification
 # ---------------------------------------------------------------------------
 def _generate_code(supabase) -> str:
+    _act_as_provider(supabase)
     response = client.post("/api/v1/donations/don-1/handover/code")
+    _act_as_ngo(supabase)
     assert response.status_code == 200
     return response.json()["handover_code"]
 
@@ -677,33 +698,27 @@ def test_code_from_another_claim_does_not_verify_handover(supabase) -> None:
     assert supabase.store["claims"][1]["handover_code_attempts"] == 1
 
 
-def test_provider_can_verify_only_their_own_donation(supabase) -> None:
+def test_provider_cannot_verify_handover(supabase) -> None:
     _seed_ngo(supabase)
     _seed_claim(supabase)
     code = _generate_code(supabase)
-    supabase.store["users"][0]["role"] = "provider"
+    _act_as_provider(supabase)
 
     response = client.post(
         "/api/v1/donations/don-1/handover/verify", json={"code": code}
     )
 
-    assert response.status_code == 200
-    assert response.json()["handover_verified"] is True
+    assert response.status_code == 403
+    assert _stored_claim(supabase)["handover_verified_at"] is None
 
 
-def test_provider_cannot_verify_another_providers_donation(supabase) -> None:
+def test_provider_cannot_generate_code_for_another_providers_donation(supabase) -> None:
     _seed_ngo(supabase, role="provider")
     _seed_claim(supabase)
-    _stored_claim(supabase)["handover_code_hash"] = hashlib.sha256(
-        b"claim-1:1234"
-    ).hexdigest()
-    _stored_claim(supabase)["handover_code_expires_at"] = (
-        datetime.now(timezone.utc) + timedelta(minutes=5)
-    ).isoformat()
     supabase.store["donations"][0]["provider_id"] = "another-provider"
 
     response = client.post(
-        "/api/v1/donations/don-1/handover/verify", json={"code": "1234"}
+        "/api/v1/donations/don-1/handover/code"
     )
 
     assert response.status_code == 404

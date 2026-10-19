@@ -1111,11 +1111,12 @@ def test_handover_verification_notifies_both_claim_participants(fake, fcm) -> No
         {"id": "claim-1", "donation_id": "don-1", "ngo_id": "ngo-1",
          "status": "accepted", "handover_code_hash": "hash", "handover_code_attempts": 0},
     ])
-    _login("ngo", {"id": "ngo-1"})
+    _login("provider", {"id": "prov-1"})
 
     code_response = client.post("/api/v1/donations/don-1/handover/code")
     assert code_response.status_code == 200, code_response.text
     code = code_response.json()["handover_code"]
+    _login("ngo", {"id": "ngo-1"})
 
     verify = client.post(
         "/api/v1/donations/don-1/handover/verify", json={"code": code}

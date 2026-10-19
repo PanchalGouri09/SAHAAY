@@ -11,14 +11,13 @@ lifecycle server-side:
     POST   /api/v1/donations/{donation_id}/handover/photo  -> store proof photo
 
 Design notes:
-  * Code generation, state reads and proof-photo uploads are `require_role("ngo")`
-    and resolve the claim from (donation_id, ngo_id-from-token). No claim id,
-    user id or organisation id ever comes from the request, so an NGO can only
-    ever act on its own claims.
-  * Verification is `require_any_role("provider", "ngo")`: either the receiving
-    NGO (who generated the code) or the donating provider may submit it. The
-    claim is still resolved from the token — a provider only ever matches a
-    donation they own — so neither party can verify someone else's handover.
+  * Code generation requires the donating provider and resolves the claim from
+    (donation_id, provider_id-from-token). No claim id, user id or organisation
+    id ever comes from the request.
+  * Verification requires the receiving NGO and resolves its claim from
+    (donation_id, ngo_id-from-token). The provider cannot verify its own code.
+  * State reads allow either claim participant; proof-photo uploads remain
+    NGO-only.
   * The code is a 4-digit value returned ONCE to the requester, stored only as
     a salted-per-claim SHA-256 hash with a 10-minute expiry and a 10-attempt
     lock, so a leaked database row does not reveal live codes and brute force
@@ -43,12 +42,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.config import get_settings
-from app.dependencies import (
-    get_current_firebase_user,
-    require_any_role,
-    require_any_role,
-    require_role,
-)
+from app.dependencies import get_current_firebase_user, require_any_role, require_role
 from app.routers.donations import (
     _EXTENSION_MIME,
     _IMAGE_EXTENSIONS,
@@ -198,10 +192,10 @@ def get_handover_state(
 @router.post("/{donation_id}/handover/code")
 def generate_handover_code(
     donation_id: str,
-    profile: dict = Depends(require_role("ngo")),
+    profile: dict = Depends(require_role("provider")),
     firebase_user: dict = Depends(get_current_firebase_user),
 ) -> dict:
-    """Generates a fresh handover code for the calling NGO's claim.
+    """Generates a fresh handover code for the calling provider's donation.
 
     An unexpired code cannot be replaced, so concurrent requests cannot hand
     out different plaintext codes while only one hash remains valid. The
@@ -261,7 +255,7 @@ def generate_handover_code(
 def verify_handover_code(
     donation_id: str,
     payload: HandoverVerifyRequest,
-    profile: dict = Depends(require_any_role("provider", "ngo")),
+    profile: dict = Depends(require_role("ngo")),
     firebase_user: dict = Depends(get_current_firebase_user),
 ) -> dict:
     """Validates the entered code against the stored hash.
