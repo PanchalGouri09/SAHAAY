@@ -1265,6 +1265,20 @@ def test_intermediate_pickup_notifies_only_the_claiming_ngo(fake, fcm) -> None:
     assert "u-provider" not in {r["user_id"] for r in rows}
 
 
+def test_delivery_progress_cannot_move_backwards(fake, fcm) -> None:
+    _seed_delivery(fake, delivery_status="in_transit")
+    _login_volunteer()
+
+    response = client.patch(
+        "/api/v1/deliveries/del-1/status", json={"status": "picked_up"}
+    )
+
+    assert response.status_code == 409
+    assert fake.rows("deliveries")[0]["status"] == "in_transit"
+    assert _notifications(fake) == []
+    assert fcm.calls == []
+
+
 def test_no_notification_when_status_does_not_change(fake, fcm) -> None:
     _seed_delivery(fake, delivery_status="accepted")
     _login_volunteer()

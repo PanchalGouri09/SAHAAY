@@ -67,10 +67,41 @@ $androidOAuthClients = @(
             $_.android_info.package_name -eq $applicationId
         }
 )
+if ($androidOAuthClients.Count -eq 0) {
+    throw "Android Firebase configuration has no matching Android OAuth client."
+}
 $firebaseOptionsPath = Join-Path $appRoot "lib\firebase_options.dart"
+if (-not (Test-Path -LiteralPath $firebaseOptionsPath -PathType Leaf)) {
+    throw "Firebase Dart options are missing: $firebaseOptionsPath"
+}
 $firebaseOptions = Get-Content -LiteralPath $firebaseOptionsPath -Raw
-if (-not $firebaseOptions.Contains($googleServices.project_info.project_id)) {
+$dartProjectIds = @(
+    [regex]::Matches($firebaseOptions, "projectId:\s*'([^']+)'") |
+        ForEach-Object { $_.Groups[1].Value } |
+        Select-Object -Unique
+)
+if (
+    $dartProjectIds.Count -ne 1 -or
+    $dartProjectIds[0] -ne $googleServices.project_info.project_id
+) {
     throw "Android Firebase project does not match lib\firebase_options.dart."
+}
+$androidOptionsMatch = [regex]::Match(
+    $firebaseOptions,
+    'static const FirebaseOptions android = FirebaseOptions\((.*?)\);',
+    [System.Text.RegularExpressions.RegexOptions]::Singleline
+)
+$androidAppIdMatch = [regex]::Match(
+    $androidOptionsMatch.Groups[1].Value,
+    "appId:\s*'([^']+)'"
+)
+if (
+    -not $androidOptionsMatch.Success -or
+    -not $androidAppIdMatch.Success -or
+    $androidAppIdMatch.Groups[1].Value -ne
+    $androidClients[0].client_info.mobilesdk_app_id
+) {
+    throw "Android Firebase app metadata does not match lib\firebase_options.dart."
 }
 
 $apiBaseUrl = $config.API_BASE_URL

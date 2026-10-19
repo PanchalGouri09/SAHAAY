@@ -36,9 +36,9 @@ void main() {
   });
 
   test('forwards foreground FCM messages to the single renderer', () async {
-    final message = RemoteMessage(
+    const message = RemoteMessage(
       messageId: 'message-1',
-      data: const {'type': 'pickup_reminder'},
+      data: {'type': 'pickup_reminder'},
     );
     final received = <RemoteMessage>[];
     final subscription = PushNotifications.listenForForegroundMessages(
@@ -54,9 +54,9 @@ void main() {
   test('background handler leaves display to Android FCM system handling',
       () async {
     await firebaseMessagingBackgroundHandler(
-      RemoteMessage(
+      const RemoteMessage(
         messageId: 'background-message',
-        notification: const RemoteNotification(
+        notification: RemoteNotification(
           title: 'Delivery update',
           body: 'A volunteer accepted the task.',
         ),
