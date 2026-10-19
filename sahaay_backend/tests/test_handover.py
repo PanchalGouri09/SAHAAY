@@ -504,19 +504,43 @@ def test_generate_code_requires_accepted_claim(supabase) -> None:
     assert _stored_claim(supabase)["handover_code_hash"] is None
 
 
-def test_generate_code_requires_trusted_contact_verification(supabase) -> None:
+def test_generate_code_works_without_firebase_phone_auth(
+    supabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_ngo(supabase)
+    _seed_claim(supabase)
+    settings = Settings(firebase_phone_auth_enabled=False)
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+    monkeypatch.setattr("app.routers.handover.get_settings", lambda: settings)
+    app.dependency_overrides[get_current_firebase_user] = lambda: {
+        "uid": "ngo-uid",
+        "email": "test@example.org",
+        "email_verified": True,
+        "phone_number": None,
+    }
+
+    response = client.post("/api/v1/donations/don-1/handover/code")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["handover_code"].isdigit()
+    assert _stored_claim(supabase)["handover_code_hash"] is not None
+
+
+def test_generate_code_still_requires_matching_verified_email(supabase) -> None:
     _seed_ngo(supabase)
     _seed_claim(supabase)
     app.dependency_overrides[get_current_firebase_user] = lambda: {
         "uid": "ngo-uid",
-        "email": "test@example.org",
-        "email_verified": False,
+        "email": "different@example.org",
+        "email_verified": True,
         "phone_number": None,
     }
 
     response = client.post("/api/v1/donations/don-1/handover/code")
 
     assert response.status_code == 403
+    assert "email matching your SAHAAY account" in response.json()["detail"]
+    assert "phone verification" not in response.json()["detail"]
     assert _stored_claim(supabase)["handover_code_hash"] is None
 
 
@@ -531,6 +555,25 @@ def test_generate_code_does_not_replace_an_active_code(supabase) -> None:
     assert second.status_code == 409
     assert _stored_claim(supabase)["handover_code_hash"] == hashlib.sha256(
         f"claim-1:{first.json()['handover_code']}".encode()
+    ).hexdigest()
+
+
+def test_concurrent_code_generation_issues_only_one_active_code(supabase) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    _seed_ngo(supabase)
+    _seed_claim(supabase)
+
+    def generate():
+        return client.post("/api/v1/donations/don-1/handover/code")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: generate(), range(2)))
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    successful = next(response for response in responses if response.status_code == 200)
+    assert _stored_claim(supabase)["handover_code_hash"] == hashlib.sha256(
+        f"claim-1:{successful.json()['handover_code']}".encode()
     ).hexdigest()
 
 
@@ -577,6 +620,61 @@ def test_verify_correct_code_records_handover(supabase) -> None:
     assert stored["handover_code_hash"] is None
     assert stored["handover_code_expires_at"] is None
     assert supabase.store["donations"][0]["status"] == "completed"
+
+
+def test_verify_code_works_without_firebase_phone_auth(
+    supabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_ngo(supabase)
+    _seed_claim(supabase)
+    code = _generate_code(supabase)
+    settings = Settings(firebase_phone_auth_enabled=False)
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+    monkeypatch.setattr("app.routers.handover.get_settings", lambda: settings)
+    app.dependency_overrides[get_current_firebase_user] = lambda: {
+        "uid": "ngo-uid",
+        "email": "test@example.org",
+        "email_verified": True,
+        "phone_number": None,
+    }
+
+    response = client.post(
+        "/api/v1/donations/don-1/handover/verify", json={"code": code}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["handover_verified"] is True
+    assert _stored_claim(supabase)["status"] == "completed"
+
+
+def test_code_from_another_claim_does_not_verify_handover(supabase) -> None:
+    _seed_ngo(supabase)
+    _seed_claim(supabase)
+    code = _generate_code(supabase)
+    supabase.store["donations"].append(
+        {"id": "don-2", "provider_id": "provider-1", "status": "claimed"}
+    )
+    supabase.store["claims"].append(
+        {
+            **_stored_claim(supabase),
+            "id": "claim-2",
+            "donation_id": "don-2",
+            "handover_code_hash": hashlib.sha256(b"claim-2:9876").hexdigest(),
+            "handover_code_expires_at": (
+                datetime.now(timezone.utc) + timedelta(minutes=5)
+            ).isoformat(),
+            "handover_code_attempts": 0,
+        }
+    )
+
+    response = client.post(
+        "/api/v1/donations/don-2/handover/verify", json={"code": code}
+    )
+
+    assert response.status_code == 400
+    assert supabase.store["claims"][0]["handover_verified_at"] is None
+    assert supabase.store["claims"][1]["handover_verified_at"] is None
+    assert supabase.store["claims"][1]["handover_code_attempts"] == 1
 
 
 def test_provider_can_verify_only_their_own_donation(supabase) -> None:

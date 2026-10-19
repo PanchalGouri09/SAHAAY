@@ -58,7 +58,10 @@ from app.routers.donations import (
 )
 from app.schemas.donation import HandoverVerifyRequest
 from app.services import acknowledgment, notification_service
-from app.services.profile_completion import require_verified_contacts
+from app.services.profile_completion import (
+    require_verified_contacts,
+    require_verified_email,
+)
 from app.services.volunteer_transport import is_live_claim_status
 from app.supabase_client import get_supabase_client
 
@@ -206,7 +209,7 @@ def generate_handover_code(
     """
     claim = _get_claim(profile, donation_id)
     _reject_if_claim_closed(claim)
-    require_verified_contacts(profile, firebase_user, action="generate a handover code")
+    require_verified_email(profile, firebase_user, action="generate a handover code")
     if claim.get("handover_verified_at"):
         raise HTTPException(
             status_code=409, detail="Handover for this claim is already verified."
@@ -271,7 +274,7 @@ def verify_handover_code(
     claim = _get_claim(profile, donation_id)
     if claim.get("status") != "completed":
         _reject_if_claim_closed(claim)
-    require_verified_contacts(profile, firebase_user, action="verify a handover")
+    require_verified_email(profile, firebase_user, action="verify a handover")
     client = get_supabase_client()
     result = _rpc_result(
         client.rpc(

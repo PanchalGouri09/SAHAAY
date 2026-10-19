@@ -382,15 +382,25 @@ def notify(
         payload["receipt_ready"] = str(receipt_ready).lower()
     if fcm_sender is not None:
         try:
-            fcm_sender.send_push_notification_to_user(
+            delivery = fcm_sender.send_push_notification_to_user(
                 user_id, title, message, data=payload
             )
+            if isinstance(delivery, dict):
+                logger.info(
+                    "Notification FCM outcome type=%s sent=%s failed=%s invalid=%s",
+                    notif_type or "info",
+                    delivery.get("sent", 0),
+                    delivery.get("failed", 0),
+                    delivery.get("invalid", 0),
+                )
         except Exception as exc:  # noqa: BLE001
             # FCM unconfigured/unreachable: the record is already durable, so the
             # business transaction is untouched and the app will still show the
             # notification when it next reads the table.
             logger.info(
-                "FCM push skipped for user %s (%s): %s", user_id, notif_type, exc
+                "Notification FCM send raised type=%s error_type=%s",
+                notif_type or "info",
+                type(exc).__name__,
             )
     return row
 

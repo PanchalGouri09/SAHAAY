@@ -233,13 +233,18 @@ def test_sender_cleans_unregistered_token_and_does_not_raise(monkeypatch):
     assert database.rows == []
 
 
-def test_sender_isolates_transient_fcm_failure(monkeypatch):
+def test_sender_isolates_transient_fcm_failure_without_logging_token(
+    monkeypatch, caplog
+):
+    import logging
+
     database = _SenderDatabase()
     monkeypatch.setattr("app.firebase_auth.get_firebase_app", lambda: object())
     monkeypatch.setattr("app.supabase_client.get_supabase_client", lambda: database)
+    caplog.set_level(logging.WARNING, logger="sahaay.fcm")
 
     def raise_transient(*_args, **_kwargs):
-        raise RuntimeError("offline")
+        raise RuntimeError("offline invalid-token")
 
     monkeypatch.setattr(fcm_sender.firebase_messaging, "send", raise_transient)
 
@@ -247,6 +252,8 @@ def test_sender_isolates_transient_fcm_failure(monkeypatch):
 
     assert result["failed"] == 1
     assert database.rows
+    assert "RuntimeError" in caplog.text
+    assert "invalid-token" not in caplog.text
 
 
 def test_ngo_push_recipient_is_resolved_from_ngo_relationship(monkeypatch):

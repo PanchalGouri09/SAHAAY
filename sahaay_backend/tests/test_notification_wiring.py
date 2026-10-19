@@ -571,6 +571,8 @@ def test_donation_created_notifies_only_same_city_complete_ngos(fake, fcm) -> No
     assert all("Vegetable Rice" in r["title"] for r in rows)
     # FCM was pushed to exactly the persisted recipients.
     assert {c[0] for c in fcm.calls} == {"u-ngo-1", "u-ngo-2"}
+    assert all(c[3]["type"] == "new_nearby_donation" for c in fcm.calls)
+    assert all(c[3]["donation_id"] == "don-1" for c in fcm.calls)
 
 
 def test_donation_created_notifies_profile_ready_ngo_without_legal_status(fake, fcm) -> None:
@@ -790,6 +792,12 @@ def test_claim_acceptance_notifies_provider_and_displaced_ngo(fake, fcm) -> None
     # ...the displaced NGO learns ITS claim was rejected...
     assert by_user["u-ngo-b"]["type"] == "claim_rejected"
     assert {c[0] for c in fcm.calls} == {"u-provider", "u-ngo-a", "u-ngo-b"}
+    provider_push = next(call for call in fcm.calls if call[0] == "u-provider")
+    assert provider_push[3] == {
+        "type": "donation_claimed",
+        "donation_id": "don-1",
+        "screen": "donation_claims",
+    }
 
 
 def test_claim_acceptance_uses_human_copy_when_food_name_is_missing(fake, fcm) -> None:

@@ -187,18 +187,20 @@ def require_complete_profile(profile: dict, *, action: str) -> None:
     )
 
 
-def contact_verification_state(profile: dict, firebase_user: dict) -> dict:
-    """Derive contact verification only from claims in a verified Firebase token."""
-    from app.config import get_settings
-
+def _email_is_verified(profile: dict, firebase_user: dict) -> bool:
     firebase_email = firebase_user.get("email")
     profile_email = profile.get("email")
-    email_verified = (
+    return (
         firebase_user.get("email_verified") is True
         and isinstance(firebase_email, str)
         and isinstance(profile_email, str)
         and firebase_email.strip().casefold() == profile_email.strip().casefold()
     )
+
+
+def contact_verification_state(profile: dict, firebase_user: dict) -> dict:
+    """Derive contact verification only from claims in a verified Firebase token."""
+    from app.config import get_settings
 
     phone_number = normalize_indian_mobile_number(
         firebase_user.get("phone_number")
@@ -215,7 +217,7 @@ def contact_verification_state(profile: dict, firebase_user: dict) -> dict:
     )
 
     return {
-        "email_verified": email_verified,
+        "email_verified": _email_is_verified(profile, firebase_user),
         "phone_verified": phone_verified,
         "phone_auth_configured": get_settings().firebase_phone_auth_enabled,
     }
@@ -238,6 +240,20 @@ def require_verified_contacts(
             status_code=403,
             detail=(
                 f"Verify your {' and '.join(missing)} before {action}. "
+                "Verification status is checked by the backend."
+            ),
+        )
+
+
+def require_verified_email(
+    profile: dict, firebase_user: dict, *, action: str
+) -> None:
+    """Require the verified Firebase email to match the SAHAAY account."""
+    if not _email_is_verified(profile, firebase_user):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Verify the email matching your SAHAAY account before {action}. "
                 "Verification status is checked by the backend."
             ),
         )

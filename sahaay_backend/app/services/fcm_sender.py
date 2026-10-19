@@ -7,6 +7,7 @@ module is called. Push failures therefore never block the underlying action.
 from __future__ import annotations
 
 import logging
+import re
 
 from firebase_admin import messaging as firebase_messaging
 
@@ -16,6 +17,7 @@ logger = logging.getLogger("sahaay.fcm")
 
 DEVICE_TOKENS_TABLE = "user_device_tokens"
 ANDROID_CHANNEL_ID = "sahaay_notifications"
+_SAFE_FCM_ERROR_CODE = re.compile(r"(?:messaging/)?[a-z0-9_-]{1,64}\Z")
 
 
 def _device_tokens(client, user_id: str) -> list[dict]:
@@ -27,7 +29,9 @@ def _device_tokens(client, user_id: str) -> list[dict]:
             .execute()
         )
     except Exception as exc:  # noqa: BLE001
-        logger.info("Could not load device tokens for %s: %s", user_id, exc)
+        logger.warning(
+            "FCM token lookup failed error_type=%s", type(exc).__name__
+        )
         return []
     return getattr(rows, "data", None) or []
 
@@ -36,7 +40,9 @@ def _prune_token(client, token: str) -> None:
     try:
         client.table(DEVICE_TOKENS_TABLE).delete().eq("token", token).execute()
     except Exception as exc:  # noqa: BLE001
-        logger.info("Could not prune stale device token: %s", exc)
+        logger.warning(
+            "Could not prune stale FCM token error_type=%s", type(exc).__name__
+        )
 
 
 def _android_config() -> "firebase_messaging.AndroidConfig":
@@ -75,15 +81,21 @@ def send_push_notification_to_user(
         client = supabase_client.get_supabase_client()
         tokens = _device_tokens(client, user_id)
     except Exception as exc:  # noqa: BLE001
-        logger.info("Could not initialize device-token lookup: %s", exc)
+        logger.warning(
+            "FCM device-token lookup initialization failed error_type=%s",
+            type(exc).__name__,
+        )
         return result
     if not tokens:
+        logger.info("FCM push skipped: no registered device tokens")
         return result
 
     try:
         app = firebase_auth.get_firebase_app()
     except Exception as exc:  # noqa: BLE001
-        logger.info("FCM is not configured; push skipped: %s", exc)
+        logger.error(
+            "FCM initialization failed error_type=%s", type(exc).__name__
+        )
         return result
 
     payload = {str(key): str(value) for key, value in (data or {}).items()}
@@ -104,9 +116,26 @@ def send_push_notification_to_user(
         except firebase_messaging.UnregisteredError:
             result["invalid"] += 1
             _prune_token(client, token)
+            logger.info("FCM removed an unregistered device token")
         except Exception as exc:  # noqa: BLE001
             result["failed"] += 1
-            logger.info("FCM send failed for user %s: %s", user_id, exc)
+            code = getattr(exc, "code", None)
+            safe_code = (
+                code
+                if isinstance(code, str) and _SAFE_FCM_ERROR_CODE.fullmatch(code)
+                else "unknown"
+            )
+            logger.warning(
+                "FCM send failed error_type=%s error_code=%s",
+                type(exc).__name__,
+                safe_code,
+            )
+    logger.info(
+        "FCM send result sent=%d failed=%d invalid=%d",
+        result["sent"],
+        result["failed"],
+        result["invalid"],
+    )
     return result
 
 
