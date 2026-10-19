@@ -1351,7 +1351,16 @@ class AppState extends ChangeNotifier {
       FirebaseMessaging.onMessage.listen((message) {
         PushNotifications.showForeground(message);
         final content = notificationTapContent(message);
-        pushNotification(content.title, content.body, content.category);
+        pushNotification(
+          content.title,
+          content.body,
+          content.category,
+          relatedDonationId: message.data['donation_id']?.toString(),
+        );
+        if (currentRole == UserRole.provider &&
+            message.data['type'] == 'donation_claimed') {
+          _handleNotificationData(message.data);
+        }
       });
       final initial = await FirebaseMessaging.instance.getInitialMessage();
       if (initial != null) _handleNotificationTap(initial);
@@ -1435,9 +1444,10 @@ class AppState extends ChangeNotifier {
           Map<String, dynamic>.from(donationValue),
           includePrivateContacts: true,
         );
-        final page = role == UserRole.provider
-            ? ProviderClaimedDonationScreen(donation: donation)
-            : ClaimedDonationDashboard(donation: donation);
+        final page = ClaimedDonationDashboard(
+          donation: donation,
+          viewerRole: role!,
+        );
         _appNavigatorKey.currentState?.push(
           MaterialPageRoute<void>(builder: (_) => page),
         );
@@ -1580,11 +1590,16 @@ class AppState extends ChangeNotifier {
   }
 
   void pushNotification(
-      String title, String body, NotificationCategory category) {
+    String title,
+    String body,
+    NotificationCategory category, {
+    String? relatedDonationId,
+  }) {
     final copy = safeNotificationCopy(title, body);
     notifications.insert(
         0,
         AppNotificationItem(
+            relatedDonationId: relatedDonationId,
             title: copy.title,
             body: copy.body,
             time: _timeNowLabel(),
@@ -6810,8 +6825,9 @@ class _ProviderDonationsTab extends StatelessWidget {
                   onTap: hasClaimDetails
                       ? () => Navigator.of(context).push(
                             MaterialPageRoute(
-                              builder: (_) => ProviderClaimedDonationScreen(
+                              builder: (_) => ClaimedDonationDashboard(
                                 donation: donation,
+                                viewerRole: UserRole.provider,
                               ),
                             ),
                           )
@@ -8057,160 +8073,6 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
               ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-/// Provider-owned view of an accepted donation and its real claim/NGO details.
-/// The API resolves claims only for donations owned by the authenticated user.
-class ProviderClaimedDonationScreen extends StatefulWidget {
-  final Donation donation;
-
-  const ProviderClaimedDonationScreen({super.key, required this.donation});
-
-  @override
-  State<ProviderClaimedDonationScreen> createState() =>
-      _ProviderClaimedDonationScreenState();
-}
-
-class _ProviderClaimedDonationScreenState
-    extends State<ProviderClaimedDonationScreen> {
-  Map<String, dynamic>? _claim;
-  bool _loading = true;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadClaim();
-  }
-
-  Future<void> _loadClaim() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final claims = await context.read<AppState>().api.getProviderClaims();
-      final matchingClaim = claims
-          .whereType<Map>()
-          .map(
-            (row) => Map<String, dynamic>.from(row),
-          )
-          .where((row) => row['donation_id']?.toString() == widget.donation.id);
-      if (!mounted) return;
-      setState(() {
-        _claim = matchingClaim.isEmpty ? null : matchingClaim.first;
-        _loading = false;
-      });
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = _apiErrorMessage(
-          e,
-          fallback: 'Could not load the claim details.',
-        );
-        _loading = false;
-      });
-    } catch (error, stackTrace) {
-      debugPrint('Could not load provider claim details: $error\n$stackTrace');
-      if (!mounted) return;
-      setState(() {
-        _error = 'Could not load the claim details. Check your connection.';
-        _loading = false;
-      });
-    }
-  }
-
-  String _claimStatusLabel(Object? status) {
-    switch (status) {
-      case 'pending':
-        return 'Awaiting handover';
-      case 'accepted':
-        return 'Accepted';
-      case 'rejected':
-        return 'Declined';
-      case 'cancelled':
-        return 'Cancelled';
-      case 'completed':
-        return 'Completed';
-      default:
-        return 'Status unavailable';
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final donation = widget.donation;
-    final claimDonationValue = _claim?['donation'];
-    final claimDonation = claimDonationValue is Map
-        ? Donation.fromBackend(
-            Map<String, dynamic>.from(claimDonationValue)
-              ..['claim_status'] = _claim?['status'],
-            includePrivateContacts: true,
-          )
-        : donation;
-    final claimNgo = _claim?['ngo'];
-    final ngo = claimNgo is Map
-        ? Map<String, dynamic>.from(claimNgo)
-        : const <String, dynamic>{};
-    final providerValue = _claim?['provider'];
-    final provider = providerValue is Map
-        ? Map<String, dynamic>.from(providerValue)
-        : const <String, dynamic>{};
-    final deliveryValue = _claim?['delivery'];
-    final delivery = deliveryValue is Map
-        ? Map<String, dynamic>.from(deliveryValue)
-        : const <String, dynamic>{};
-    final coordinationValue = _claim?['transport_coordination'];
-    final coordination = coordinationValue is Map
-        ? Map<String, dynamic>.from(coordinationValue)
-        : const <String, dynamic>{};
-
-    return Scaffold(
-      appBar: AppBar(title: const Text('Donation details')),
-      body: ListView(
-        padding: const EdgeInsets.all(AppSpacing.lg),
-        children: [
-          ClaimedDonationFacts(
-            donation: claimDonation,
-            provider: provider,
-            ngo: ngo,
-            delivery: delivery,
-            transportCoordination: coordination,
-          ),
-          const SizedBox(height: AppSpacing.md),
-          if (_loading)
-            const Center(child: CircularProgressIndicator())
-          else if (_error != null)
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(_error!),
-                TextButton.icon(
-                  onPressed: _loadClaim,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Retry'),
-                ),
-              ],
-            )
-          else if (_claim == null)
-            const Text('Claim details are not available yet.')
-          else ...[
-            Text('Claim status: ${_claimStatusLabel(_claim!['status'])}'),
-            if (_claim!['id'] != null)
-              TransportCoordinationCard(
-                claimId: _claim!['id'].toString(),
-                role: 'provider',
-                initialState: coordination,
-              ),
-            _VerifyHandoverAction(
-              donation: claimDonation,
-              onVerified: _loadClaim,
-            ),
-          ],
-        ],
       ),
     );
   }
@@ -10724,7 +10586,13 @@ class DonationDetailScreen extends StatelessWidget {
 
 class ClaimedDonationDashboard extends StatefulWidget {
   final Donation donation;
-  const ClaimedDonationDashboard({super.key, required this.donation});
+  final UserRole viewerRole;
+
+  const ClaimedDonationDashboard({
+    super.key,
+    required this.donation,
+    this.viewerRole = UserRole.ngo,
+  }) : assert(viewerRole == UserRole.ngo || viewerRole == UserRole.provider);
 
   @override
   State<ClaimedDonationDashboard> createState() =>
@@ -10817,7 +10685,10 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
       });
     }
     try {
-      final claims = await context.read<AppState>().api.getClaims();
+      final api = context.read<AppState>().api;
+      final claims = widget.viewerRole == UserRole.provider
+          ? await api.getProviderClaims()
+          : await api.getClaims();
       final match = claims
           .whereType<Map>()
           .map(
@@ -10992,7 +10863,7 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
             if (_claim?['id'] != null)
               TransportCoordinationCard(
                 claimId: _claim!['id'].toString(),
-                role: 'ngo',
+                role: widget.viewerRole.name,
                 initialState: coordination,
                 delivery: delivery,
               ),
@@ -11004,7 +10875,11 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
             const SizedBox(height: AppSpacing.lg),
             const SectionHeader(title: 'Handover Photo'),
             const SizedBox(height: 10),
-            _buildPhotoCard(context, c),
+            _buildPhotoCard(
+              context,
+              c,
+              canUpload: widget.viewerRole == UserRole.ngo,
+            ),
           ],
         ),
       ),
@@ -11095,9 +10970,11 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
         padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(
-            'Generate a one-time code and share it with the provider at '
-            'pickup. The handover is completed by '
-            'entering the code below.',
+            widget.viewerRole == UserRole.ngo
+                ? 'Generate a one-time code and share it with the provider at '
+                    'pickup. Enter the code below to verify the handover.'
+                : 'Enter the one-time code shared by the NGO to verify the '
+                    'handover.',
             style: TextStyle(fontSize: 12.5, color: c.textSecondary),
           ),
           const SizedBox(height: 12),
@@ -11124,7 +11001,8 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
               ),
             ],
             const SizedBox(height: 12),
-          ] else if (_activeCodeUnavailable) ...[
+          ] else if (_activeCodeUnavailable &&
+              widget.viewerRole == UserRole.ngo) ...[
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -11148,19 +11026,21 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
             ),
             const SizedBox(height: 12),
           ],
-          SecondaryButton(
-            label: _activeCodeUnavailable
-                ? 'WAIT FOR CODE EXPIRY'
-                : _code != null && _activeCodeNotExpired
-                    ? 'CODE ACTIVE'
-                    : _hasActiveCode
-                        ? 'GENERATE NEW CODE'
-                        : 'GENERATE HANDOVER CODE',
-            icon: Icons.password_outlined,
-            onPressed:
-                _generatingCode || _activeCodeNotExpired ? null : _generateCode,
-            isLoading: _generatingCode,
-          ),
+          if (widget.viewerRole == UserRole.ngo)
+            SecondaryButton(
+              label: _activeCodeUnavailable
+                  ? 'WAIT FOR CODE EXPIRY'
+                  : _code != null && _activeCodeNotExpired
+                      ? 'CODE ACTIVE'
+                      : _hasActiveCode
+                          ? 'GENERATE NEW CODE'
+                          : 'GENERATE HANDOVER CODE',
+              icon: Icons.password_outlined,
+              onPressed: _generatingCode || _activeCodeNotExpired
+                  ? null
+                  : _generateCode,
+              isLoading: _generatingCode,
+            ),
           const SizedBox(height: 14),
           AppInputField(
             label: 'Enter handover code',
@@ -11178,7 +11058,11 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
     );
   }
 
-  Widget _buildPhotoCard(BuildContext context, AppColors c) {
+  Widget _buildPhotoCard(
+    BuildContext context,
+    AppColors c, {
+    required bool canUpload,
+  }) {
     final hasServer = _photoUrl != null && _photoUrl!.isNotEmpty;
     final Widget image;
     if (hasServer) {
@@ -11201,14 +11085,15 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
         child: image,
       ),
       const SizedBox(height: 10),
-      SecondaryButton(
-        label: hasServer
-            ? 'REPLACE PHOTO'
-            : (_photo == null ? 'ADD HANDOVER PHOTO' : 'UPLOAD PHOTO'),
-        icon: Icons.add_a_photo_outlined,
-        onPressed: _uploadingPhoto ? null : _pickAndUploadPhoto,
-        isLoading: _uploadingPhoto,
-      ),
+      if (canUpload)
+        SecondaryButton(
+          label: hasServer
+              ? 'REPLACE PHOTO'
+              : (_photo == null ? 'ADD HANDOVER PHOTO' : 'UPLOAD PHOTO'),
+          icon: Icons.add_a_photo_outlined,
+          onPressed: _uploadingPhoto ? null : _pickAndUploadPhoto,
+          isLoading: _uploadingPhoto,
+        ),
     ]);
   }
 
@@ -13340,9 +13225,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           Map<String, dynamic>.from(donationValue),
           includePrivateContacts: true,
         );
-        final page = widget.role == UserRole.provider
-            ? ProviderClaimedDonationScreen(donation: donation)
-            : ClaimedDonationDashboard(donation: donation);
+        final page = ClaimedDonationDashboard(
+          donation: donation,
+          viewerRole: widget.role,
+        );
         await Navigator.of(context).push(
           MaterialPageRoute<void>(builder: (_) => page),
         );

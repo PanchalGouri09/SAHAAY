@@ -1890,26 +1890,45 @@ void main() {
               'organization_name': 'Hope Foundation',
               'city': 'Pune',
             },
+            'donation': {
+              'id': 'donation-1',
+              'food_name': 'Persisted Jeera Rice',
+              'food_category': 'prepared_meals',
+              'quantity': 4,
+              'servings': 8,
+              'pickup_address': '12 Main Road, Pune',
+              'status': 'claimed',
+            },
           },
         ];
       final donation = Donation.fromBackend({
         'id': 'donation-1',
-        'food_name': 'Jeera Rice',
+        'food_name': 'Stale Jeera Rice',
         'food_category': 'prepared_meals',
         'quantity': 4,
         'servings': 8,
         'pickup_address': '12 Main Road, Pune',
-        'status': 'claimed',
+        'status': 'available',
       });
       _tallScreen(tester);
       await tester.pumpWidget(_appWithState(
-          ProviderClaimedDonationScreen(donation: donation), api));
+        ClaimedDonationDashboard(
+          donation: donation,
+          viewerRole: UserRole.provider,
+        ),
+        api,
+      ));
       await tester.pumpAndSettle();
 
-      expect(find.text('Jeera Rice'), findsOneWidget);
+      expect(find.text('Persisted Jeera Rice'), findsOneWidget);
+      expect(find.text('Stale Jeera Rice'), findsNothing);
       expect(find.text('Hope Foundation'), findsOneWidget);
       expect(find.text('Pune'), findsOneWidget);
-      expect(find.textContaining('Claim status: Accepted'), findsOneWidget);
+      expect(find.text('Claimed Donation'), findsOneWidget);
+      expect(find.text('Claimed'), findsOneWidget);
+      expect(find.text('accepted'), findsOneWidget);
+      expect(find.text('GENERATE HANDOVER CODE'), findsNothing);
+      expect(find.text('VERIFY & CONFIRM HANDOVER'), findsOneWidget);
       expect(find.text('12 Main Road, Pune'), findsOneWidget);
       expect(find.text('donation-1'), findsNothing);
     });
@@ -1927,11 +1946,16 @@ void main() {
       });
       _tallScreen(tester);
       await tester.pumpWidget(_appWithState(
-          ProviderClaimedDonationScreen(donation: donation), api));
+        ClaimedDonationDashboard(
+          donation: donation,
+          viewerRole: UserRole.provider,
+        ),
+        api,
+      ));
       await tester.pumpAndSettle();
 
       expect(find.text('Not provided'), findsWidgets);
-      expect(find.textContaining('Claim status: Accepted'), findsOneWidget);
+      expect(find.text('Claimed Donation'), findsOneWidget);
     });
 
     test('missing freshness is labelled as unavailable, not as a dash', () {
