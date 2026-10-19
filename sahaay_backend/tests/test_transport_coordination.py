@@ -72,6 +72,48 @@ def test_transport_migration_serializes_winner_and_volunteer_assignment():
     assert "to service_role" in migration
 
 
+def test_explicit_volunteer_request_migration_waits_for_both_declines():
+    migration_path = (
+        Path(__file__).parents[1]
+        / "supabase"
+        / "migrations"
+        / "20261019000000_explicit_volunteer_delivery_request.sql"
+    )
+    migration = migration_path.read_text(encoding="utf-8").lower()
+    response_function = migration.split(
+        "create or replace function public.respond_to_claim_transport", 1
+    )[1].split(
+        "create or replace function public.request_claim_volunteer_delivery", 1
+    )[0]
+    request_function = migration.split(
+        "create or replace function public.request_claim_volunteer_delivery", 1
+    )[1].split(
+        "create or replace function public.confirm_claim_volunteer_assignment", 1
+    )[0]
+    assignment_function = migration.split(
+        "create or replace function public.confirm_claim_volunteer_assignment", 1
+    )[1].split("revoke all on function", 1)[0]
+
+    assert "status = 'awaiting_volunteer_request'" in response_function
+    assert "insert into public.deliveries" not in response_function
+    assert "provider_response is distinct from 'no'" in request_function
+    assert "ngo_response is distinct from 'no'" in request_function
+    assert "for update" in request_function
+    assert "status = 'searching_for_volunteers'" in request_function
+    assert "created', false" in request_function
+    assert "expiry_time <= clock_timestamp()" in request_function
+    assert "pickup_deadline <= clock_timestamp()" in request_function
+    assert "expiry_time is null" in request_function
+    assert "pickup_deadline is null" in request_function
+    assert "volunteer_id is null" in assignment_function
+    assert "expiry_time <= clock_timestamp()" in assignment_function
+    assert "pickup_deadline <= clock_timestamp()" in assignment_function
+    assert "expiry_time is null" in assignment_function
+    assert "pickup_deadline is null" in assignment_function
+    assert "grant execute on function public.request_claim_volunteer_delivery" in migration
+    assert "to service_role" in migration
+
+
 def test_handover_migration_keeps_completion_state_atomic_with_coordination():
     migration_path = (
         Path(__file__).parents[1]

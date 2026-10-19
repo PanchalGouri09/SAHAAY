@@ -73,6 +73,8 @@ class _FakeApi extends ApiService {
   int transportCoordinationReads = 0;
   ApiException? transportCoordinationReadError;
   final List<Map<String, dynamic>> transportResponses = [];
+  final List<String> volunteerDeliveryRequests = [];
+  ApiException? volunteerDeliveryRequestError;
   Completer<Map<String, dynamic>>? pendingDonationResponse;
   Completer<({double latitude, double longitude})?>? pendingGeocode;
   Object? donationError;
@@ -251,13 +253,46 @@ class _FakeApi extends ApiService {
       if (captainName != null) 'captain_name': captainName,
       if (captainPhone != null) 'captain_phone': captainPhone,
     });
+    final responseField =
+        profile['role'] == 'provider' ? 'provider_response' : 'ngo_response';
+    final responsible =
+        response == 'yes' && transportCoordination['responsible_role'] == null
+            ? profile['role']
+            : transportCoordination['responsible_role'];
+    final updated = {
+      ...transportCoordination,
+      responseField: response,
+      'status': response == 'yes'
+          ? '${responsible}_transport'
+          : transportCoordination[profile['role'] == 'provider'
+                      ? 'ngo_response'
+                      : 'provider_response'] ==
+                  'no'
+              ? 'awaiting_volunteer_request'
+              : 'awaiting_responses',
+      if (responsible != null) 'responsible_role': responsible,
+      if (captainName != null) '${profile['role']}_captain_name': captainName,
+      if (captainPhone != null)
+        '${profile['role']}_captain_phone': captainPhone,
+    };
+    transportCoordination = {
+      ...updated,
+    };
+    return Map<String, dynamic>.from(transportCoordination);
+  }
+
+  @override
+  Future<Map<String, dynamic>> requestVolunteerDelivery(String claimId) async {
+    volunteerDeliveryRequests.add(claimId);
+    final error = volunteerDeliveryRequestError;
+    if (error != null) {
+      volunteerDeliveryRequestError = null;
+      throw error;
+    }
     transportCoordination = {
       ...transportCoordination,
-      'ngo_response': response,
-      'status': response == 'no' ? 'searching_for_volunteers' : 'ngo_transport',
-      if (response == 'yes') 'responsible_role': 'ngo',
-      if (captainName != null) 'ngo_captain_name': captainName,
-      if (captainPhone != null) 'ngo_captain_phone': captainPhone,
+      'status': 'searching_for_volunteers',
+      'delivery_eligible': true,
     };
     return Map<String, dynamic>.from(transportCoordination);
   }
@@ -539,24 +574,30 @@ void main() {
         };
       _tallScreen(tester);
       await tester.pumpWidget(_appWithState(
-        const TransportCoordinationCard(claimId: 'claim-1', role: 'ngo'),
+        const Scaffold(
+          body: TransportCoordinationCard(claimId: 'claim-1', role: 'ngo'),
+        ),
         api,
       ));
       await tester.pumpAndSettle();
 
       expect(api.transportCoordinationReads, 1);
+      expect(find.text('COORDINATE DELIVERY'), findsOneWidget);
+      expect(find.text('Are you going to pick up the donation?'), findsNothing);
+
+      await tester.tap(find.text('COORDINATE DELIVERY'));
+      await tester.pumpAndSettle();
       expect(
           find.text('Are you going to pick up the donation?'), findsOneWidget);
-      expect(find.text('Yes'), findsOneWidget);
-      expect(find.text('No'), findsOneWidget);
-
-      await tester.tap(find.text('No'));
+      expect(find.text('YES'), findsOneWidget);
+      expect(find.text('NO'), findsOneWidget);
+      await tester.tap(find.text('NO'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect(api.transportResponses, hasLength(1));
       expect(api.transportResponses.single['response'], 'no');
-      expect(find.text('Searching for volunteers'), findsOneWidget);
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(find.text('Searching for volunteers'), findsNothing);
+      expect(find.text('Both participants declined.'), findsNothing);
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpWidget(_appWithState(
@@ -568,7 +609,74 @@ void main() {
 
       expect(api.transportCoordinationReads, 2);
       expect(find.textContaining('Cannot handle transport'), findsOneWidget);
-      expect(find.text('Are you going to pick up the donation?'), findsNothing);
+      expect(find.text('COORDINATE DELIVERY'), findsNothing);
+    });
+
+    testWidgets('both No responses open the request modal and create one task',
+        (tester) async {
+      final api = _FakeApi(profile: _providerProfile())
+        ..transportCoordination = {
+          'claim_id': 'claim-1',
+          'provider_response': null,
+          'ngo_response': 'no',
+          'responsible_role': null,
+          'status': 'awaiting_responses',
+          'delivery_eligible': true,
+        };
+      _tallScreen(tester);
+      await tester.pumpWidget(_appWithState(
+        const Scaffold(
+          body: TransportCoordinationCard(
+            claimId: 'claim-1',
+            role: 'provider',
+          ),
+        ),
+        api,
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('COORDINATE DELIVERY'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('NO'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(
+        find.text('Both the provider and NGO are not handling the delivery.'),
+        findsOneWidget,
+      );
+      await tester.tap(find.byKey(const ValueKey('request-volunteer')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(api.volunteerDeliveryRequests, ['claim-1']);
+      expect(find.text('Searching for volunteers'), findsOneWidget);
+      expect(find.text('REQUEST A VOLUNTEER'), findsNothing);
+    });
+
+    testWidgets('expired coordination hides the action', (tester) async {
+      final api = _FakeApi(profile: _ngoProfile())
+        ..transportCoordination = {
+          'claim_id': 'claim-expired',
+          'provider_response': null,
+          'ngo_response': null,
+          'responsible_role': null,
+          'status': 'awaiting_responses',
+          'delivery_eligible': false,
+        };
+      _tallScreen(tester);
+      await tester.pumpWidget(_appWithState(
+        const TransportCoordinationCard(
+          claimId: 'claim-expired',
+          role: 'ngo',
+        ),
+        api,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('This delivery is expired or no longer open.'),
+          findsOneWidget);
+      expect(find.text('COORDINATE DELIVERY'), findsNothing);
     });
 
     testWidgets('shows retry when persisted coordination cannot be read',
@@ -588,12 +696,31 @@ void main() {
       await tester.tap(find.byTooltip('Retry'));
       await tester.pumpAndSettle();
       expect(api.transportCoordinationReads, 2);
-      expect(
-          find.text('Are you going to pick up the donation?'), findsOneWidget);
+      expect(find.text('COORDINATE DELIVERY'), findsOneWidget);
     });
   });
 
   group('Profile completion dashboards', () {
+    testWidgets('volunteer dashboard encourages real delivery milestones',
+        (tester) async {
+      final api = _FakeApi(profile: _volunteerProfile(percentage: 100));
+      _tallScreen(tester);
+      await tester.pumpWidget(
+        _appWithState(const VolunteerDashboardScreen(), api),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('VOLUNTEER (OPTIONAL ROLE)'), findsNothing);
+      expect(
+        find.text(
+          'Take your first delivery and help good food reach the people who need it.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Impact Points'), findsNothing);
+      expect(find.text('5 deliveries'), findsOneWidget);
+    });
+
     testWidgets('NGO dashboard lists matching fields missing after enrollment',
         (tester) async {
       final api = _FakeApi(profile: _ngoProfile());

@@ -346,6 +346,12 @@ class ApiService {
         },
       );
 
+  Future<Map<String, dynamic>> requestVolunteerDelivery(String claimId) =>
+      _request(
+        'POST',
+        '/api/v1/claims/$claimId/transport-coordination/request-volunteer',
+      );
+
   /// Persisted ranked offers addressed to the signed-in NGO.
   ///
   /// The backend derives the NGO from authentication and enriches each offer

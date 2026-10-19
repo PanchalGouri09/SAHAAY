@@ -1,6 +1,7 @@
 """Claim-scoped, persisted transport decisions for provider and NGO participants."""
 
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -30,7 +31,7 @@ def _participant_claim(client, claim_id: str, profile: dict) -> tuple[dict, dict
         raise HTTPException(status_code=404, detail="Claim not found.")
     donation_response = (
         client.table("donations")
-        .select("id,provider_id,food_name")
+        .select("id,provider_id,food_name,status,expiry_time,pickup_deadline")
         .eq("id", str(claim["donation_id"]))
         .maybe_single()
         .execute()
@@ -44,12 +45,33 @@ def _participant_claim(client, claim_id: str, profile: dict) -> tuple[dict, dict
     return claim, donation
 
 
+def _delivery_is_open(claim: dict, donation: dict) -> bool:
+    if claim.get("status") not in {"pending", "accepted"}:
+        return False
+    if donation.get("status") in {"expired", "cancelled", "completed", "delivered"}:
+        return False
+    now = datetime.now(timezone.utc)
+    for field in ("expiry_time", "pickup_deadline"):
+        raw = donation.get(field)
+        if not raw:
+            return False
+        try:
+            deadline = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        if deadline <= now:
+            return False
+    return True
+
+
 @router.get("/{claim_id}/transport-coordination")
 def get_transport_coordination(
     claim_id: str, profile: dict = Depends(require_any_role("provider", "ngo"))
 ) -> dict:
     client = get_supabase_client()
-    claim, _ = _participant_claim(client, claim_id, profile)
+    claim, donation = _participant_claim(client, claim_id, profile)
     try:
         response = (
             client.table("claim_transport_coordination")
@@ -70,7 +92,36 @@ def get_transport_coordination(
             status_code=503,
             detail="Transport coordination is unavailable until the database migration is applied.",
         )
-    return row
+    delivery_result = (
+        client.table("deliveries")
+        .select("id,claim_id,status,volunteer_id,pickup_time")
+        .eq("claim_id", str(claim["id"]))
+        .maybe_single()
+        .execute()
+    )
+    delivery = getattr(delivery_result, "data", None)
+    if delivery and delivery.get("volunteer_id"):
+        volunteer_result = (
+            client.table("volunteers")
+            .select("id,user_id")
+            .eq("id", str(delivery["volunteer_id"]))
+            .maybe_single()
+            .execute()
+        )
+        volunteer = getattr(volunteer_result, "data", None) or {}
+        user_result = (
+            client.table("users")
+            .select("id,full_name,phone")
+            .eq("id", str(volunteer.get("user_id")))
+            .maybe_single()
+            .execute()
+        ) if volunteer.get("user_id") else None
+        delivery["volunteer"] = getattr(user_result, "data", None) or {}
+    return {
+        **row,
+        "delivery": delivery,
+        "delivery_eligible": _delivery_is_open(claim, donation),
+    }
 
 
 @router.post("/{claim_id}/transport-coordination/respond")
@@ -183,6 +234,89 @@ def respond_to_transport_coordination(
                 client, donation=donation, claim=claim
             )
     return coordination
+
+
+@router.post("/{claim_id}/transport-coordination/request-volunteer")
+def request_volunteer_delivery(
+    claim_id: str,
+    profile: dict = Depends(require_any_role("provider", "ngo")),
+) -> dict:
+    role = profile.get("role")
+    client = get_supabase_client()
+    claim, donation = _participant_claim(client, claim_id, profile)
+    if not _delivery_is_open(claim, donation):
+        raise HTTPException(
+            status_code=409,
+            detail="This claim or delivery has expired or is no longer open.",
+        )
+
+    try:
+        volunteers = client.table("volunteers").select("id").limit(1).execute().data or []
+    except Exception as exc:
+        logger.warning("Volunteer eligibility check failed (%s)", type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="Volunteer availability could not be checked. Please retry.",
+        ) from exc
+    if not volunteers:
+        raise HTTPException(
+            status_code=409,
+            detail="No volunteer accounts are currently available. Please retry later.",
+        )
+
+    try:
+        result = client.rpc(
+            "request_claim_volunteer_delivery",
+            {
+                "p_claim_id": str(claim["id"]),
+                "p_actor_role": role,
+            },
+        ).execute()
+    except Exception as exc:
+        logger.warning(
+            "Volunteer delivery request failed for claim %s (%s)",
+            claim_id,
+            type(exc).__name__,
+        )
+        message = str(exc).lower()
+        if any(
+            phrase in message
+            for phrase in (
+                "expired",
+                "not available",
+                "must decline",
+                "not open",
+                "belongs to another",
+            )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="This claim is no longer eligible for a volunteer request.",
+            ) from exc
+        raise HTTPException(
+            status_code=503,
+            detail="The volunteer request could not be saved. Please retry.",
+        ) from exc
+    outcome = getattr(result, "data", None)
+    if isinstance(outcome, list) and len(outcome) == 1:
+        outcome = outcome[0]
+    if not isinstance(outcome, dict) or not isinstance(
+        outcome.get("coordination"), dict
+    ):
+        raise HTTPException(
+            status_code=502,
+            detail="The database returned an invalid volunteer request.",
+        )
+    coordination = outcome["coordination"]
+    if outcome.get("created") is True:
+        notification_service.transport_volunteer_search_started(
+            client, donation=donation, claim=claim
+        )
+    return {
+        **coordination,
+        "delivery": outcome.get("delivery"),
+        "created": bool(outcome.get("created")),
+    }
 
 
 def coordination_by_claim_ids(client, claims: list[dict]) -> dict[str, dict]:

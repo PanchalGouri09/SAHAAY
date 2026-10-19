@@ -7798,7 +7798,7 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
         widget.initialState?.isNotEmpty == true ? widget.initialState : null;
     _load();
     _refreshTimer = Timer.periodic(
-      const Duration(seconds: 20),
+      const Duration(seconds: 10),
       (_) {
         if (mounted && !_sending && !_loading) _load();
       },
@@ -7917,9 +7917,137 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
               );
       if (!mounted) return;
       setState(() => _state = coordination);
+      if (coordination['status'] == 'awaiting_volunteer_request') {
+        await _showVolunteerRequestDialog();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Your delivery response was saved.')),
+        );
+      }
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() => _error = error.message);
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  Future<void> _openDecisionDialog() async {
+    if (_loading) return;
+    if (_state == null) {
+      await _load();
+      if (!mounted || _state == null) return;
+    }
+    final state = _state!;
+    if (state['delivery_eligible'] == false) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This donation or delivery has expired or is closed.'),
+        ),
+      );
+      return;
+    }
+    if (state['status'] == 'awaiting_volunteer_request') {
+      await _showVolunteerRequestDialog();
+      return;
+    }
+    if (state['status'] == 'searching_for_volunteers' ||
+        state['status'] == 'volunteer_assigned' ||
+        state['status'] == 'completed') {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Delivery coordination'),
+          content: Text(
+            state['status'] == 'searching_for_volunteers'
+                ? 'A volunteer has been requested. The assignment will appear here when accepted.'
+                : state['status'] == 'volunteer_assigned'
+                    ? 'A volunteer has accepted this delivery.'
+                    : 'This delivery is complete.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('CLOSE'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    final response = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delivery responsibility'),
+        content: Text(
+          widget.role == 'ngo'
+              ? 'Are you going to pick up the donation?'
+              : 'Are you going to deliver the donation?',
+        ),
+        actions: [
+          FilledButton(
+            key: const ValueKey('transport-yes'),
+            onPressed: () => Navigator.of(dialogContext).pop('yes'),
+            child: const Text('YES'),
+          ),
+          FilledButton(
+            key: const ValueKey('transport-no'),
+            onPressed: () => Navigator.of(dialogContext).pop('no'),
+            child: const Text('NO'),
+          ),
+        ],
+      ),
+    );
+    if (response == null || !mounted) return;
+    await _respond(response);
+  }
+
+  Future<void> _showVolunteerRequestDialog() async {
+    final shouldRequest = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Volunteer delivery'),
+        content: const Text(
+          'Both the provider and NGO are not handling the delivery.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('NOT NOW'),
+          ),
+          FilledButton(
+            key: const ValueKey('request-volunteer'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('REQUEST A VOLUNTEER'),
+          ),
+        ],
+      ),
+    );
+    if (shouldRequest != true || !mounted) return;
+    setState(() {
+      _sending = true;
+      _error = null;
+    });
+    try {
+      final coordination = await context
+          .read<AppState>()
+          .api
+          .requestVolunteerDelivery(widget.claimId);
+      if (!mounted) return;
+      setState(() => _state = coordination);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Volunteer delivery requested.')),
+      );
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _error = error.message);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.message.isEmpty
+              ? 'Could not request a volunteer. Please retry.'
+              : error.message),
+        ),
+      );
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -7953,7 +8081,10 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
     };
     final captainName = state['${responsible}_captain_name']?.toString();
     final captainPhone = state['${responsible}_captain_phone']?.toString();
-    final delivery = widget.delivery ?? const <String, dynamic>{};
+    final refreshedDeliveryValue = state['delivery'];
+    final delivery = refreshedDeliveryValue is Map
+        ? Map<String, dynamic>.from(refreshedDeliveryValue)
+        : widget.delivery ?? const <String, dynamic>{};
     final volunteerValue = delivery['volunteer'];
     final volunteer = volunteerValue is Map
         ? Map<String, dynamic>.from(volunteerValue)
@@ -7964,9 +8095,7 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
     final displayPhone = responsible == 'volunteer'
         ? volunteer['phone']?.toString()
         : captainPhone;
-    final prompt = role == 'ngo'
-        ? 'Are you going to pick up the donation?'
-        : 'Are you going to deliver the donation?';
+    final eligible = state['delivery_eligible'] != false;
 
     return Card(
       child: Padding(
@@ -7991,8 +8120,14 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
                 ],
               )
             else ...[
-              Text('Your response: ${_responseLabel(ownResponse)}'),
-              Text('$otherRole: ${_responseLabel(otherResponse)}'),
+              Text(
+                'Your response: ${_responseLabel(ownResponse)}',
+                key: const ValueKey('own-transport-response'),
+              ),
+              Text(
+                '$otherRole: ${_responseLabel(otherResponse)}',
+                key: const ValueKey('other-transport-response'),
+              ),
               if (responsibleLabel != null) ...[
                 Text('Arrangement: $responsibleLabel'),
                 if (displayName?.trim().isNotEmpty == true)
@@ -8034,26 +8169,52 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
               ] else if (status == 'volunteer_assigned' &&
                   responsibleLabel == null)
                 const Text('A volunteer has accepted this delivery task.'),
-              if (responsible == null) ...[
-                const SizedBox(height: 8),
-                if (ownResponse == null)
-                  Text(prompt,
-                      style: const TextStyle(fontWeight: FontWeight.w700)),
-                if (ownResponse == null)
-                  Wrap(
-                    spacing: 8,
-                    children: [
-                      OutlinedButton(
-                        onPressed: _sending ? null : () => _respond('yes'),
-                        child: const Text('Yes'),
-                      ),
-                      OutlinedButton(
-                        onPressed: _sending ? null : () => _respond('no'),
-                        child: const Text('No'),
-                      ),
-                    ],
+              if (delivery['status']?.toString() case final deliveryStatus?
+                  when deliveryStatus != 'unassigned')
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    'Current delivery progress: ${deliveryStatusLabel(_deliveryStatusFromBackend(deliveryStatus))}',
                   ),
-              ],
+                ),
+              if (status == 'awaiting_volunteer_request')
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    'Both participants declined. A volunteer can be requested.',
+                  ),
+                ),
+              if (eligible &&
+                      ownResponse == null &&
+                      status != 'searching_for_volunteers' &&
+                      status != 'volunteer_assigned' &&
+                      status != 'completed' ||
+                  eligible && status == 'awaiting_volunteer_request')
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: FilledButton(
+                    onPressed: _sending
+                        ? null
+                        : status == 'awaiting_volunteer_request'
+                            ? _showVolunteerRequestDialog
+                            : _openDecisionDialog,
+                    child: Text(
+                      status == 'awaiting_volunteer_request'
+                          ? 'REQUEST A VOLUNTEER'
+                          : ownResponse == null
+                              ? 'COORDINATE DELIVERY'
+                              : 'VIEW DELIVERY OPTIONS',
+                    ),
+                  ),
+                ),
+              if (!eligible &&
+                  status != 'searching_for_volunteers' &&
+                  status != 'volunteer_assigned' &&
+                  status != 'completed')
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text('This delivery is expired or no longer open.'),
+                ),
             ],
             if (_sending)
               const Padding(
@@ -10980,12 +11141,25 @@ class _VolunteerDashboardScreenState extends State<VolunteerDashboardScreen> {
   bool _loading = true;
   String? _error;
   final Set<String> _accepting = {};
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
     _loadProfileCompletion();
     _loadDeliveries();
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) {
+        if (mounted && !_loading && _accepting.isEmpty) _loadDeliveries();
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadProfileCompletion() async {
@@ -11069,6 +11243,19 @@ class _VolunteerDashboardScreenState extends State<VolunteerDashboardScreen> {
       if (!mounted) return;
       // Re-read so the volunteer's own delivery list reflects the new work.
       await _loadDeliveries();
+      if (!mounted) return;
+      final assigned =
+          _myDeliveries.where((delivery) => delivery.id == task.id);
+      if (assigned.isNotEmpty) {
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => DeliveryDetailScreen(
+              opportunity: assigned.first,
+              onAccept: (_) {},
+            ),
+          ),
+        );
+      }
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => _accepting.remove(task.id));
@@ -11185,6 +11372,20 @@ class _VolunteerHomeTab extends StatelessWidget {
     final completed = myDeliveries
         .where((o) => o.status == DeliveryStatus.delivered)
         .toList();
+    final nextMilestone = completed.length < 5
+        ? 5
+        : completed.length < 10
+            ? 10
+            : completed.length < 25
+                ? 25
+                : completed.length < 50
+                    ? 50
+                    : ((completed.length ~/ 50) + 1) * 50;
+    final milestoneMessage = completed.isEmpty
+        ? 'Take your first delivery and help good food reach the people who need it.'
+        : completed.length < nextMilestone
+            ? 'You are ${nextMilestone - completed.length} deliveries from your next milestone of $nextMilestone. Every trip makes a difference.'
+            : 'Your delivery milestone is reached. Keep the momentum going!';
     final distanceCovered =
         completed.fold<double>(0, (sum, o) => sum + (o.distanceKm ?? 0));
     return CustomScrollView(
@@ -11192,8 +11393,9 @@ class _VolunteerHomeTab extends StatelessWidget {
         SliverToBoxAdapter(
           child: DashboardHeader(
             greeting: 'Hi, ${state.currentName} 👋',
-            subtitle: 'Ready to make an impact today?',
-            roleLabel: 'VOLUNTEER (OPTIONAL ROLE)',
+            subtitle:
+                'Every delivery moves good food closer to someone in need.',
+            roleLabel: 'VOLUNTEER',
             imageUrl: state.currentProfileImageUrl,
             onNotificationTap: () =>
                 _openNotifications(context, UserRole.volunteer),
@@ -11241,8 +11443,8 @@ class _VolunteerHomeTab extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                     child: StatCard(
-                        label: 'Impact Points',
-                        value: '0',
+                        label: 'Next Goal',
+                        value: '$nextMilestone deliveries',
                         icon: Icons.workspace_premium_outlined)),
               ]),
               const SizedBox(height: AppSpacing.lg),
@@ -11254,13 +11456,19 @@ class _VolunteerHomeTab extends StatelessWidget {
                       color: c.surfaceAlt,
                       borderRadius: BorderRadius.circular(12)),
                   child: Row(children: [
-                    Icon(Icons.info_outline, size: 18, color: c.textSecondary),
+                    Icon(Icons.volunteer_activism_outlined,
+                        size: 20, color: c.bluePrimary),
                     const SizedBox(width: 8),
                     Expanded(
-                        child: Text(
-                            'Volunteering is optional — donations are never blocked waiting for a volunteer.',
-                            style: TextStyle(
-                                fontSize: 12, color: c.textSecondary))),
+                      child: Text(
+                        milestoneMessage,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: c.textPrimary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
                   ]),
                 );
               }),
@@ -11569,6 +11777,57 @@ class DeliveryDetailScreen extends StatefulWidget {
 }
 
 class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
+  bool _downloadingReceipt = false;
+  String? _refreshError;
+  Timer? _refreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => _refreshAssignedDelivery(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refreshAssignedDelivery() async {
+    final deliveryId = widget.opportunity.id;
+    if (deliveryId.isEmpty) return;
+    try {
+      final rows = await context.read<AppState>().api.getDeliveries();
+      final row = rows.whereType<Map>().firstWhere(
+            (item) => item['id']?.toString() == deliveryId,
+            orElse: () => const <String, dynamic>{},
+          );
+      if (!mounted) return;
+      if (row.isEmpty) {
+        setState(
+            () => _refreshError = 'Your assigned delivery is unavailable.');
+        return;
+      }
+      final refreshedStatus =
+          _deliveryStatusFromBackend(row['status']?.toString());
+      setState(() {
+        widget.opportunity.status = refreshedStatus;
+        _refreshError = null;
+      });
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _refreshError = _apiErrorMessage(
+          error,
+          fallback: 'Delivery progress could not be refreshed.',
+        );
+      });
+    }
+  }
+
   static const _steps = [
     DeliveryStatus.accepted,
     DeliveryStatus.pickedUp,
@@ -11579,6 +11838,35 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
   int get _currentStepIndex {
     final idx = _steps.indexOf(widget.opportunity.status);
     return idx;
+  }
+
+  Future<void> _downloadReceipt() async {
+    if (_downloadingReceipt) return;
+    final donationId = widget.opportunity.donation?.id;
+    if (donationId == null || donationId.isEmpty) return;
+    setState(() => _downloadingReceipt = true);
+    try {
+      final bytes =
+          await context.read<AppState>().api.downloadAcknowledgment(donationId);
+      if (!mounted) return;
+      final saved = await saveAcknowledgmentPdf(donationId, bytes);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Receipt saved to ${saved.location}')),
+      );
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_apiErrorMessage(
+            error,
+            fallback: 'The completion receipt is not available yet.',
+          )),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _downloadingReceipt = false);
+    }
   }
 
   Future<void> _advance() async {
@@ -11639,7 +11927,10 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                 donation: o.donation!,
                 provider: o.provider,
                 ngo: o.ngo,
-                delivery: <String, dynamic>{'volunteer': o.volunteer},
+                delivery: <String, dynamic>{
+                  'volunteer': o.volunteer,
+                  'status': _deliveryStatusToBackend(o.status),
+                },
                 transportCoordination: o.coordination,
               )
             else ...[
@@ -11649,6 +11940,14 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
               StatusChip(
                   label: deliveryStatusLabel(o.status), color: c.bluePrimary),
               const SizedBox(height: AppSpacing.lg),
+              if (_refreshError != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: AppSpacing.md),
+                  child: Text(
+                    _refreshError!,
+                    style: TextStyle(color: c.danger),
+                  ),
+                ),
               SahaayGoogleMap(
                 height: 150,
                 latitude: o.latitude,
@@ -11696,7 +11995,7 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                     label:
                         'MARK "${deliveryStatusLabel(_steps[_currentStepIndex + 1]).toUpperCase()}"',
                     onPressed: _advance)
-              else
+              else ...[
                 Container(
                   padding: const EdgeInsets.all(AppSpacing.md),
                   decoration: BoxDecoration(
@@ -11710,6 +12009,16 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                             'Delivery completed. Thank you for helping SAHAAY!')),
                   ]),
                 ),
+                if (o.donation != null) ...[
+                  const SizedBox(height: 12),
+                  SecondaryButton(
+                    label: 'DOWNLOAD COMPLETION RECEIPT',
+                    icon: Icons.download_outlined,
+                    onPressed: _downloadingReceipt ? null : _downloadReceipt,
+                    isLoading: _downloadingReceipt,
+                  ),
+                ],
+              ],
             ],
           ],
         ),

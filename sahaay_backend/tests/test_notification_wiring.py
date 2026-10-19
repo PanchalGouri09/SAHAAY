@@ -932,11 +932,13 @@ def _seed_delivery(fake, *, delivery_status="assigned", donation_status="claimed
     ])
     fake.seed("donations", [
         {"id": "don-1", "provider_id": "prov-1", "food_name": "Vegetable Rice",
-         "quantity": 10.0, "unit": "kg", "status": donation_status},
+         "quantity": 10.0, "unit": "kg", "status": donation_status,
+         "expiry_time": "2030-01-01T20:00:00Z",
+         "pickup_deadline": "2030-01-01T13:00:00Z"},
     ])
     fake.seed("claims", [
         {"id": "claim-1", "donation_id": "don-1", "ngo_id": "ngo-1",
-         "status": "accepted"},
+         "status": "accepted", "handover_verified_at": "2030-01-01T10:00:00Z"},
     ])
     fake.seed("deliveries", [
         {"id": "del-1", "donation_id": "don-1", "claim_id": "claim-1",
@@ -1049,6 +1051,15 @@ def test_delivered_status_notifies_both_parties(fake, fcm) -> None:
     rows = [r for r in _notifications(fake) if r["type"] == "delivery_completed"]
     assert {r["user_id"] for r in rows} == {"u-ngo", "u-provider"}
     assert fake.rows("donations")[0]["status"] == "completed"  # trigger simulated
+    repeated = client.patch(
+        "/api/v1/deliveries/del-1/status", json={"status": "delivered"}
+    )
+    assert repeated.status_code == 200
+    assert len([r for r in _notifications(fake) if r["type"] == "delivery_completed"]) == 2
+    reopened = client.patch(
+        "/api/v1/deliveries/del-1/status", json={"status": "accepted"}
+    )
+    assert reopened.status_code == 409
 
 
 def test_intermediate_pickup_notifies_only_the_claiming_ngo(fake, fcm) -> None:
