@@ -453,7 +453,7 @@ class Donation {
 
   // Post-claim detail fields (Section 8). All optional/nullable — populated
   // once the real database is connected. Volunteer fields stay null unless
-  // a volunteer actually takes the delivery (volunteering is optional).
+  // a volunteer actually takes the delivery.
   final String? providerAddress;
   final String? providerContactNumber;
   final double? providerRating;
@@ -1345,6 +1345,9 @@ class AppState extends ChangeNotifier {
           registerFcmTokenWithBackend(token, PushNotifications.platform)
               .ignore();
         }
+      }, onError: (Object error) {
+        debugPrint(
+            'FCM token refresh stream failed error_type=${error.runtimeType}');
       });
       // A foreground push is not shown by the system, so render it ourselves on
       // the audible channel and record it in the in-app list.
@@ -1368,8 +1371,9 @@ class AppState extends ChangeNotifier {
       await FirebaseMessaging.instance
           .setForegroundNotificationPresentationOptions(
               alert: true, badge: true, sound: true);
-    } catch (_) {
-      // Push must never block normal app use.
+    } catch (error) {
+      debugPrint(
+          'FCM listener initialization failed error_type=${error.runtimeType}');
     }
   }
 
@@ -1382,13 +1386,21 @@ class AppState extends ChangeNotifier {
           await activePermissionService().status(AppPermission.notifications);
       if (permission != PermissionOutcome.granted &&
           permission != PermissionOutcome.notRequired) {
+        debugPrint(
+            'FCM registration skipped notification_permission=${permission.name}');
         return;
       }
       final token = await FirebaseMessaging.instance.getToken();
-      if (token == null || token.isEmpty) return;
+      if (token == null || token.isEmpty) {
+        debugPrint('FCM registration skipped reason=token_unavailable');
+        return;
+      }
       await registerFcmTokenWithBackend(token, PushNotifications.platform);
-    } catch (_) {
-      // Best-effort.
+    } on ApiException catch (error) {
+      debugPrint(
+          'FCM token registration failed api_status=${error.statusCode}');
+    } catch (error) {
+      debugPrint('FCM token retrieval failed error_type=${error.runtimeType}');
     }
   }
 
@@ -1399,8 +1411,12 @@ class AppState extends ChangeNotifier {
       await api.registerFcmToken(token, platform);
       fcmToken = token;
       notifyListeners();
-    } catch (_) {
-      // Best-effort.
+    } on ApiException catch (error) {
+      debugPrint(
+          'FCM token registration failed api_status=${error.statusCode}');
+    } catch (error) {
+      debugPrint(
+          'FCM token registration failed error_type=${error.runtimeType}');
     }
   }
 
@@ -3472,8 +3488,7 @@ class RoleSelectionScreen extends StatelessWidget {
             RoleCard(
               icon: Icons.volunteer_activism_outlined,
               title: 'Volunteer',
-              subtitle:
-                  'Optionally help deliver food from providers to NGOs nearby.',
+              subtitle: 'Help deliver food from providers to nearby NGOs.',
               onTap: () => Navigator.of(context).push(MaterialPageRoute(
                   builder: (_) => RegisterVolunteerScreen(
                       googleEnrollment: googleEnrollment))),
@@ -5387,7 +5402,6 @@ class ProviderDashboardScreen extends StatefulWidget {
 class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
   int _tab = 0;
   final List<Donation> _donations = [];
-  List<Map<String, dynamic>> _providerClaims = [];
   bool _loading = true;
   String? _error;
   bool _creatingDonation = false;
@@ -5487,7 +5501,6 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
           ..addAll(list);
         _loading = false;
       });
-      await _loadProviderClaims();
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -5502,21 +5515,6 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
         _error = 'Could not refresh your donations. Check your connection.';
         _loading = false;
       });
-    }
-  }
-
-  Future<void> _loadProviderClaims() async {
-    try {
-      final rows = await context.read<AppState>().api.getProviderClaims();
-      if (!mounted) return;
-      setState(() {
-        _providerClaims = rows
-            .whereType<Map>()
-            .map((row) => Map<String, dynamic>.from(row))
-            .toList();
-      });
-    } on ApiException catch (error) {
-      debugPrint('Could not refresh provider claim details: ${error.message}');
     }
   }
 
@@ -5580,9 +5578,7 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
       pageAt(
           1,
           _ProviderDonationsTab(
-              donations: _donations,
-              claims: _providerClaims,
-              onRefresh: _loadDonations)),
+              donations: _donations, onRefresh: _loadDonations)),
       pageAt(
         2,
         _ProviderImpactTab(donations: _donations),
@@ -6775,14 +6771,12 @@ class _ProviderHomeTab extends StatelessWidget {
 
 class _ProviderDonationsTab extends StatelessWidget {
   final List<Donation> donations;
-  final List<Map<String, dynamic>> claims;
 
   /// Re-reads the provider's donations from the backend after a handover is
   /// verified, so the completed status is reflected without a manual refresh.
   final Future<void> Function()? onRefresh;
   const _ProviderDonationsTab({
     required this.donations,
-    this.claims = const [],
     this.onRefresh,
   });
 
@@ -6803,8 +6797,7 @@ class _ProviderDonationsTab extends StatelessWidget {
               separatorBuilder: (_, __) => const SizedBox(height: 10),
               itemBuilder: (context, i) {
                 final donation = donations[i];
-                final available = donation.status != DonationStatus.delivered &&
-                    donation.status != DonationStatus.expired;
+                final available = donation.status == DonationStatus.available;
                 // A claim exists once the status has left "Available"; that is
                 // the donation whose pickup can be confirmed with a code.
                 final awaitingHandover =
@@ -6812,14 +6805,6 @@ class _ProviderDonationsTab extends StatelessWidget {
                         donation.status == DonationStatus.inTransit;
                 final hasClaimDetails = awaitingHandover ||
                     donation.status == DonationStatus.delivered;
-                final claim = claims
-                    .where(
-                        (row) => row['donation_id']?.toString() == donation.id)
-                    .firstOrNull;
-                final coordinationValue = claim?['transport_coordination'];
-                final coordination = coordinationValue is Map
-                    ? Map<String, dynamic>.from(coordinationValue)
-                    : const <String, dynamic>{};
                 return DonationCard(
                   donation: donation,
                   onTap: hasClaimDetails
@@ -6845,17 +6830,6 @@ class _ProviderDonationsTab extends StatelessWidget {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              if (awaitingHandover)
-                                if (claim?['id'] != null)
-                                  TransportCoordinationCard(
-                                    claimId: claim!['id'].toString(),
-                                    role: 'provider',
-                                    initialState: coordination,
-                                    delivery: claim['delivery'] is Map
-                                        ? Map<String, dynamic>.from(
-                                            claim['delivery'] as Map)
-                                        : null,
-                                  ),
                               if (available)
                                 _DonationAiActions(donation: donation),
                             ],
@@ -7746,8 +7720,18 @@ class ClaimedDonationFacts extends StatelessWidget {
                   const Divider(),
                   _fact(
                     context,
-                    'Transport arrangement',
+                    'Delivery coordination',
                     transportCoordinationStatusLabel(coordination['status']),
+                  ),
+                  _fact(
+                    context,
+                    'Provider response',
+                    _transportResponseLabel(coordination['provider_response']),
+                  ),
+                  _fact(
+                    context,
+                    'NGO response',
+                    _transportResponseLabel(coordination['ngo_response']),
                   ),
                   if (coordination['responsible_role'] == 'volunteer') ...[
                     _fact(context, 'Responsible person',
@@ -7755,6 +7739,16 @@ class ClaimedDonationFacts extends StatelessWidget {
                     _phone(context, 'Assigned contact',
                         volunteerDetails['phone']?.toString()),
                   ],
+                  if (deliveryDetails['status']?.toString()
+                      case final deliveryStatus?
+                      when deliveryStatus != 'unassigned')
+                    _fact(
+                      context,
+                      'Delivery progress',
+                      deliveryStatusLabel(
+                        _deliveryStatusFromBackend(deliveryStatus),
+                      ),
+                    ),
                 ],
               ],
             ),
@@ -7763,6 +7757,12 @@ class ClaimedDonationFacts extends StatelessWidget {
       ],
     );
   }
+
+  String _transportResponseLabel(Object? value) => switch (value) {
+        'yes' => 'Will handle delivery',
+        'no' => 'Will not handle delivery',
+        _ => 'Response pending',
+      };
 }
 
 class TransportCoordinationCard extends StatefulWidget {
@@ -7770,6 +7770,7 @@ class TransportCoordinationCard extends StatefulWidget {
   final String role;
   final Map<String, dynamic>? initialState;
   final Map<String, dynamic>? delivery;
+  final ValueChanged<Map<String, dynamic>>? onStateChanged;
 
   const TransportCoordinationCard({
     super.key,
@@ -7777,11 +7778,68 @@ class TransportCoordinationCard extends StatefulWidget {
     required this.role,
     this.initialState,
     this.delivery,
+    this.onStateChanged,
   });
 
   @override
   State<TransportCoordinationCard> createState() =>
       _TransportCoordinationCardState();
+}
+
+class _TransportCaptainContactDialog extends StatefulWidget {
+  const _TransportCaptainContactDialog();
+
+  @override
+  State<_TransportCaptainContactDialog> createState() =>
+      _TransportCaptainContactDialogState();
+}
+
+class _TransportCaptainContactDialogState
+    extends State<_TransportCaptainContactDialog> {
+  final _nameController = TextEditingController();
+  final _phoneController = TextEditingController();
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _phoneController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Transport contact'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: _nameController,
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(labelText: 'Captain name'),
+              ),
+              TextField(
+                controller: _phoneController,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(labelText: 'Mobile number'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop((
+              name: _nameController.text.trim(),
+              phone: _phoneController.text.trim(),
+            )),
+            child: const Text('Continue'),
+          ),
+        ],
+      );
 }
 
 class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
@@ -7835,6 +7893,7 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
         _state = coordination;
         _loading = false;
       });
+      widget.onStateChanged?.call(coordination);
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -7850,44 +7909,10 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
     String? captainName;
     String? captainPhone;
     if (response == 'yes') {
-      final nameController = TextEditingController();
-      final phoneController = TextEditingController();
       final details = await showDialog<({String name, String phone})>(
         context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Transport contact'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                textCapitalization: TextCapitalization.words,
-                decoration: const InputDecoration(labelText: 'Captain name'),
-              ),
-              TextField(
-                controller: phoneController,
-                keyboardType: TextInputType.phone,
-                decoration: const InputDecoration(labelText: 'Mobile number'),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(dialogContext).pop((
-                name: nameController.text.trim(),
-                phone: phoneController.text.trim(),
-              )),
-              child: const Text('Continue'),
-            ),
-          ],
-        ),
+        builder: (_) => const _TransportCaptainContactDialog(),
       );
-      nameController.dispose();
-      phoneController.dispose();
       if (details == null || !mounted) return;
       captainName = details.name;
       captainPhone = normalizeIndianMobileNumber(details.phone);
@@ -7917,6 +7942,7 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
               );
       if (!mounted) return;
       setState(() => _state = coordination);
+      widget.onStateChanged?.call(coordination);
       if (coordination['status'] == 'awaiting_volunteer_request') {
         await _showVolunteerRequestDialog();
       } else {
@@ -7975,6 +8001,26 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
       );
       return;
     }
+    if (state['responsible_role'] != null ||
+        (state['${widget.role}_response'] != null &&
+            state['status'] != 'awaiting_volunteer_request')) {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Delivery coordination'),
+          content: const Text(
+            'Your response is saved. The delivery details and latest status are shown on this claimed-donation page.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('CLOSE'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     final response = await showDialog<String>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -7987,11 +8033,19 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
         actions: [
           FilledButton(
             key: const ValueKey('transport-yes'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+            ),
             onPressed: () => Navigator.of(dialogContext).pop('yes'),
             child: const Text('YES'),
           ),
           FilledButton(
             key: const ValueKey('transport-no'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+            ),
             onPressed: () => Navigator.of(dialogContext).pop('no'),
             child: const Text('NO'),
           ),
@@ -8017,6 +8071,10 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
           ),
           FilledButton(
             key: const ValueKey('request-volunteer'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+            ),
             onPressed: () => Navigator.of(dialogContext).pop(true),
             child: const Text('REQUEST A VOLUNTEER'),
           ),
@@ -8035,6 +8093,7 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
           .requestVolunteerDelivery(widget.claimId);
       if (!mounted) return;
       setState(() => _state = coordination);
+      widget.onStateChanged?.call(coordination);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Volunteer delivery requested.')),
       );
@@ -8053,185 +8112,76 @@ class _TransportCoordinationCardState extends State<TransportCoordinationCard> {
     }
   }
 
-  String _responseLabel(Object? value) {
-    switch (value) {
-      case 'yes':
-        return 'Will handle transport';
-      case 'no':
-        return 'Cannot handle transport';
-      default:
-        return 'Response pending';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final state = _state ?? const <String, dynamic>{};
     final role = widget.role;
-    final otherRole = role == 'provider' ? 'ngo' : 'provider';
     final ownResponse = state['${role}_response'];
-    final otherResponse = state['${otherRole}_response'];
     final status = state['status']?.toString();
-    final responsible = state['responsible_role']?.toString();
-    final responsibleLabel = switch (responsible) {
-      'provider' => 'Provider delivery',
-      'ngo' => 'NGO pickup',
-      'volunteer' => 'Volunteer delivery',
-      _ => null,
-    };
-    final captainName = state['${responsible}_captain_name']?.toString();
-    final captainPhone = state['${responsible}_captain_phone']?.toString();
-    final refreshedDeliveryValue = state['delivery'];
-    final delivery = refreshedDeliveryValue is Map
-        ? Map<String, dynamic>.from(refreshedDeliveryValue)
-        : widget.delivery ?? const <String, dynamic>{};
-    final volunteerValue = delivery['volunteer'];
-    final volunteer = volunteerValue is Map
-        ? Map<String, dynamic>.from(volunteerValue)
-        : const <String, dynamic>{};
-    final displayName = responsible == 'volunteer'
-        ? volunteer['full_name']?.toString()
-        : captainName;
-    final displayPhone = responsible == 'volunteer'
-        ? volunteer['phone']?.toString()
-        : captainPhone;
     final eligible = state['delivery_eligible'] != false;
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.md),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Delivery coordination',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            if (_loading && _state == null)
-              const LinearProgressIndicator()
-            else if (_error != null && _state == null)
-              Row(
-                children: [
-                  Expanded(child: Text(_error!)),
-                  IconButton(
-                    onPressed: _load,
-                    icon: const Icon(Icons.refresh),
-                    tooltip: 'Retry',
-                  ),
-                ],
-              )
-            else ...[
-              Text(
-                'Your response: ${_responseLabel(ownResponse)}',
-                key: const ValueKey('own-transport-response'),
+    final canCoordinate = eligible &&
+        ((ownResponse == null && status == 'awaiting_responses') ||
+            status == 'awaiting_volunteer_request') &&
+        status != 'searching_for_volunteers' &&
+        status != 'volunteer_assigned' &&
+        status != 'completed';
+    final actionLabel = status == 'awaiting_volunteer_request'
+        ? 'REQUEST A VOLUNTEER'
+        : ownResponse == null
+            ? 'COORDINATE DELIVERY'
+            : 'VIEW DELIVERY STATUS';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_loading && _state == null)
+          const LinearProgressIndicator()
+        else if (_error != null && _state == null)
+          Row(
+            children: [
+              Expanded(child: Text(_error!)),
+              IconButton(
+                onPressed: _load,
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Retry',
               ),
-              Text(
-                '$otherRole: ${_responseLabel(otherResponse)}',
-                key: const ValueKey('other-transport-response'),
-              ),
-              if (responsibleLabel != null) ...[
-                Text('Arrangement: $responsibleLabel'),
-                if (displayName?.trim().isNotEmpty == true)
-                  Text('Captain / volunteer: ${displayName!.trim()}'),
-                if (dialerUriForPhone(displayPhone) case final uri?)
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton.icon(
-                      onPressed: () async {
-                        final opened = await launchUrl(
-                          uri,
-                          mode: LaunchMode.externalApplication,
-                        );
-                        if (!opened && context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                                content: Text('Could not open the dialer.')),
-                          );
-                        }
-                      },
-                      icon: const Icon(Icons.phone_outlined),
-                      label: Text(displayPhone!),
-                    ),
-                  ),
-              ],
-              if (status == 'searching_for_volunteers') ...[
-                const SizedBox(height: 8),
-                const Row(
-                  children: [
-                    SizedBox(
-                      height: 16,
-                      width: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                    SizedBox(width: 10),
-                    Expanded(child: Text('Searching for volunteers')),
-                  ],
-                ),
-              ] else if (status == 'volunteer_assigned' &&
-                  responsibleLabel == null)
-                const Text('A volunteer has accepted this delivery task.'),
-              if (delivery['status']?.toString() case final deliveryStatus?
-                  when deliveryStatus != 'unassigned')
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(
-                    'Current delivery progress: ${deliveryStatusLabel(_deliveryStatusFromBackend(deliveryStatus))}',
-                  ),
-                ),
-              if (status == 'awaiting_volunteer_request')
-                const Padding(
-                  padding: EdgeInsets.only(top: 8),
-                  child: Text(
-                    'Both participants declined. A volunteer can be requested.',
-                  ),
-                ),
-              if (eligible &&
-                      ownResponse == null &&
-                      status != 'searching_for_volunteers' &&
-                      status != 'volunteer_assigned' &&
-                      status != 'completed' ||
-                  eligible && status == 'awaiting_volunteer_request')
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: FilledButton(
-                    onPressed: _sending
-                        ? null
-                        : status == 'awaiting_volunteer_request'
-                            ? _showVolunteerRequestDialog
-                            : _openDecisionDialog,
-                    child: Text(
-                      status == 'awaiting_volunteer_request'
-                          ? 'REQUEST A VOLUNTEER'
-                          : ownResponse == null
-                              ? 'COORDINATE DELIVERY'
-                              : 'VIEW DELIVERY OPTIONS',
-                    ),
-                  ),
-                ),
-              if (!eligible &&
-                  status != 'searching_for_volunteers' &&
-                  status != 'volunteer_assigned' &&
-                  status != 'completed')
-                const Padding(
-                  padding: EdgeInsets.only(top: 8),
-                  child: Text('This delivery is expired or no longer open.'),
-                ),
             ],
-            if (_sending)
-              const Padding(
-                padding: EdgeInsets.only(top: 8),
-                child: LinearProgressIndicator(),
-              ),
-            if (_error != null && _state != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  _error!,
-                  style: TextStyle(color: AppColors.of(context).danger),
-                ),
-              ),
-          ],
-        ),
-      ),
+          )
+        else if (canCoordinate || status == 'searching_for_volunteers')
+          FilledButton.icon(
+            key: const ValueKey('open-transport-coordination'),
+            onPressed: _sending
+                ? null
+                : status == 'awaiting_volunteer_request'
+                    ? _showVolunteerRequestDialog
+                    : _openDecisionDialog,
+            icon: _sending
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.local_shipping_outlined),
+            label: Text(actionLabel),
+          )
+        else if (!eligible)
+          const Text('This delivery is expired or no longer open.')
+        else
+          OutlinedButton.icon(
+            onPressed: _openDecisionDialog,
+            icon: const Icon(Icons.info_outline),
+            label: const Text('VIEW DELIVERY STATUS'),
+          ),
+        if (_error != null && _state != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              _error!,
+              style: TextStyle(color: AppColors.of(context).danger),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -8365,7 +8315,7 @@ class _DonationAiActionsState extends State<_DonationAiActions> {
                     width: 12,
                     child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.hub_outlined, size: 16),
-            label: const Text('Matched NGOs',
+            label: const Text('Request NGO',
                 style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
           ),
         ),
@@ -9251,7 +9201,6 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
   int _tab = 0;
   final List<Donation> _nearby = [];
   final List<Donation> _claimed = [];
-  List<Map<String, dynamic>> _claimRows = [];
   bool _loading = true;
   String? _error;
   bool _claimsLoading = true;
@@ -9415,10 +9364,6 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
       final state = context.read<AppState>();
       final rows = await state.api.getClaims();
       final claims = <Donation>[];
-      final claimRows = rows
-          .whereType<Map>()
-          .map((value) => Map<String, dynamic>.from(value))
-          .toList();
       for (final value in rows) {
         if (value is! Map) continue;
         final claim = Map<String, dynamic>.from(value);
@@ -9438,7 +9383,6 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
         _claimed
           ..clear()
           ..addAll(claims);
-        _claimRows = claimRows;
         _claimsLoading = false;
       });
     } on ApiException catch (e) {
@@ -9643,7 +9587,6 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
           2,
           _NgoClaimsTab(
             claimed: _claimed,
-            claimRows: _claimRows,
             loading: _claimsLoading,
             error: _claimsError,
             onRetry: _loadClaims,
@@ -10237,13 +10180,11 @@ class _NgoFindFoodTabState extends State<_NgoFindFoodTab> {
 
 class _NgoClaimsTab extends StatelessWidget {
   final List<Donation> claimed;
-  final List<Map<String, dynamic>> claimRows;
   final bool loading;
   final String? error;
   final VoidCallback onRetry;
   const _NgoClaimsTab({
     required this.claimed,
-    this.claimRows = const [],
     required this.loading,
     required this.error,
     required this.onRetry,
@@ -10282,13 +10223,8 @@ class _NgoClaimsTab extends StatelessWidget {
                       separatorBuilder: (_, __) => const SizedBox(height: 10),
                       itemBuilder: (context, i) {
                         final donation = claimed[i];
-                        final claim = claimRows
-                            .where((row) =>
-                                row['donation_id']?.toString() == donation.id)
-                            .firstOrNull;
                         return _ClaimSummaryCard(
                           donation: donation,
-                          claim: claim,
                           onTap: () => Navigator.of(context).push(
                             MaterialPageRoute(
                               builder: (_) => ClaimedDonationDashboard(
@@ -10309,12 +10245,10 @@ class _NgoClaimsTab extends StatelessWidget {
 /// are completely unaffected.
 class _ClaimSummaryCard extends StatelessWidget {
   final Donation donation;
-  final Map<String, dynamic>? claim;
   final VoidCallback onTap;
   const _ClaimSummaryCard({
     required this.donation,
     required this.onTap,
-    this.claim,
   });
 
   @override
@@ -10364,23 +10298,6 @@ class _ClaimSummaryCard extends StatelessWidget {
                 Text('View claim details',
                     style: TextStyle(fontSize: 12, color: c.textSecondary)),
               ]),
-              if (claim?['id'] != null &&
-                  claim?['status'] != 'completed' &&
-                  claim?['status'] != 'cancelled' &&
-                  claim?['status'] != 'rejected') ...[
-                const SizedBox(height: 8),
-                TransportCoordinationCard(
-                  claimId: claim!['id'].toString(),
-                  role: 'ngo',
-                  initialState: claim?['transport_coordination'] is Map
-                      ? Map<String, dynamic>.from(
-                          claim!['transport_coordination'] as Map)
-                      : null,
-                  delivery: claim?['delivery'] is Map
-                      ? Map<String, dynamic>.from(claim!['delivery'] as Map)
-                      : null,
-                ),
-              ],
             ],
           ),
         ),
@@ -10587,7 +10504,7 @@ class DonationDetailScreen extends StatelessWidget {
 
 // =============================================================================
 // POST-CLAIM DASHBOARD — shown once an NGO claims a donation. Covers GPS
-// location, restaurant info, optional volunteer info, OTP handover
+// location, restaurant info, assigned volunteer details, OTP handover
 // verification, and a handover photo. Every field falls back to an honest
 // "not provided yet" state rather than any invented value (Section 8/10).
 // =============================================================================
@@ -10709,6 +10626,17 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
     } on ApiException catch (error) {
       debugPrint('Could not refresh NGO claim details: ${error.message}');
     }
+  }
+
+  void _onTransportCoordinationChanged(Map<String, dynamic> coordination) {
+    if (!mounted) return;
+    final updatedClaim = Map<String, dynamic>.from(_claim ?? const {});
+    updatedClaim['transport_coordination'] = coordination;
+    final delivery = coordination['delivery'];
+    if (delivery is Map) {
+      updatedClaim['delivery'] = Map<String, dynamic>.from(delivery);
+    }
+    setState(() => _claim = updatedClaim);
   }
 
   Future<void> _generateCode() async {
@@ -10874,8 +10802,8 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
                 role: widget.viewerRole.name,
                 initialState: coordination,
                 delivery: delivery,
+                onStateChanged: _onTransportCoordinationChanged,
               ),
-            const SizedBox(height: AppSpacing.lg),
             const SizedBox(height: AppSpacing.lg),
             const SectionHeader(title: 'Handover Verification'),
             const SizedBox(height: 10),
@@ -14514,7 +14442,7 @@ class HelpSupportScreen extends StatelessWidget {
   static const _faqs = [
     (
       'How SAHAAY Works',
-      'Food providers list surplus food, NGOs discover and claim it nearby, and a volunteer can optionally help deliver it. A donation never depends on a volunteer being available.',
+      'Food providers list surplus food, NGOs discover and claim it nearby, and volunteers can accept delivery requests when both parties need delivery support.',
     ),
     (
       'Donation Help',

@@ -598,6 +598,7 @@ void main() {
       expect(api.transportResponses.single['response'], 'no');
       expect(find.text('Searching for volunteers'), findsNothing);
       expect(find.text('Both participants declined.'), findsNothing);
+      expect(find.text('VIEW DELIVERY STATUS'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pumpWidget(_appWithState(
@@ -608,7 +609,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(api.transportCoordinationReads, 2);
-      expect(find.textContaining('Cannot handle transport'), findsOneWidget);
+      expect(find.text('VIEW DELIVERY STATUS'), findsOneWidget);
       expect(find.text('COORDINATE DELIVERY'), findsNothing);
     });
 
@@ -650,40 +651,197 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
 
       expect(api.volunteerDeliveryRequests, ['claim-1']);
-      expect(find.text('Searching for volunteers'), findsOneWidget);
+      expect(find.text('VIEW DELIVERY STATUS'), findsOneWidget);
       expect(find.text('REQUEST A VOLUNTEER'), findsNothing);
     });
 
-    testWidgets('expired coordination hides the action', (tester) async {
-      final api = _FakeApi(profile: _ngoProfile())
+    testWidgets('a pending provider decision waits after the NGO declines',
+        (tester) async {
+      final api = _FakeApi(profile: _providerProfile())
         ..transportCoordination = {
-          'claim_id': 'claim-expired',
+          'claim_id': 'claim-1',
           'provider_response': null,
-          'ngo_response': null,
+          'ngo_response': 'no',
           'responsible_role': null,
           'status': 'awaiting_responses',
-          'delivery_eligible': false,
+          'delivery_eligible': true,
         };
       _tallScreen(tester);
       await tester.pumpWidget(_appWithState(
-        const TransportCoordinationCard(
-          claimId: 'claim-expired',
-          role: 'ngo',
+        const Scaffold(
+          body: TransportCoordinationCard(
+            claimId: 'claim-1',
+            role: 'provider',
+          ),
         ),
         api,
       ));
       await tester.pumpAndSettle();
 
-      expect(find.text('This delivery is expired or no longer open.'),
-          findsOneWidget);
-      expect(find.text('COORDINATE DELIVERY'), findsNothing);
+      expect(find.text('COORDINATE DELIVERY'), findsOneWidget);
+      expect(find.text('REQUEST A VOLUNTEER'), findsNothing);
+      expect(
+        find.text('Both the provider and NGO are not handling the delivery.'),
+        findsNothing,
+      );
+      expect(api.volunteerDeliveryRequests, isEmpty);
     });
+
+    testWidgets('a Yes response prevents volunteer request when other said No',
+        (tester) async {
+      final api = _FakeApi(profile: _providerProfile())
+        ..transportCoordination = {
+          'claim_id': 'claim-1',
+          'provider_response': null,
+          'ngo_response': 'no',
+          'responsible_role': null,
+          'status': 'awaiting_responses',
+          'delivery_eligible': true,
+        };
+      _tallScreen(tester);
+      await tester.pumpWidget(_appWithState(
+        const Scaffold(
+          body: TransportCoordinationCard(
+            claimId: 'claim-1',
+            role: 'provider',
+          ),
+        ),
+        api,
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('COORDINATE DELIVERY'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('YES'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField).at(0), 'Captain');
+      await tester.enterText(find.byType(TextField).at(1), '9876543210');
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+
+      expect(api.transportResponses.single['response'], 'yes');
+      expect(api.volunteerDeliveryRequests, isEmpty);
+      expect(
+        find.text('Both the provider and NGO are not handling the delivery.'),
+        findsNothing,
+      );
+      expect(find.text('VIEW DELIVERY STATUS'), findsOneWidget);
+    });
+
+    testWidgets('an existing Yes arrangement is view-only for the other party',
+        (tester) async {
+      final api = _FakeApi(profile: _ngoProfile())
+        ..transportCoordination = {
+          'claim_id': 'claim-1',
+          'provider_response': 'yes',
+          'ngo_response': null,
+          'responsible_role': 'provider',
+          'status': 'provider_transport',
+          'delivery_eligible': true,
+        };
+      _tallScreen(tester);
+      await tester.pumpWidget(_appWithState(
+        const Scaffold(
+          body: TransportCoordinationCard(claimId: 'claim-1', role: 'ngo'),
+        ),
+        api,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('VIEW DELIVERY STATUS'), findsOneWidget);
+      await tester.tap(find.text('VIEW DELIVERY STATUS'));
+      await tester.pumpAndSettle();
+      expect(find.text('YES'), findsNothing);
+      expect(find.text('NO'), findsNothing);
+      expect(
+        find.text('Both the provider and NGO are not handling the delivery.'),
+        findsNothing,
+      );
+      expect(api.transportResponses, isEmpty);
+      expect(api.volunteerDeliveryRequests, isEmpty);
+    });
+
+    testWidgets('request cannot be duplicated after a volunteer task exists',
+        (tester) async {
+      final api = _FakeApi(profile: _providerProfile())
+        ..transportCoordination = {
+          'claim_id': 'claim-1',
+          'provider_response': 'no',
+          'ngo_response': 'no',
+          'responsible_role': null,
+          'status': 'awaiting_volunteer_request',
+          'delivery_eligible': true,
+        };
+      _tallScreen(tester);
+      await tester.pumpWidget(_appWithState(
+        const Scaffold(
+          body: TransportCoordinationCard(
+            claimId: 'claim-1',
+            role: 'provider',
+          ),
+        ),
+        api,
+      ));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('REQUEST A VOLUNTEER'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('request-volunteer')));
+      await tester.pumpAndSettle();
+      expect(api.volunteerDeliveryRequests, ['claim-1']);
+      await tester.tap(find.text('VIEW DELIVERY STATUS'));
+      await tester.pumpAndSettle();
+      expect(api.volunteerDeliveryRequests, ['claim-1']);
+      expect(find.textContaining('A volunteer has been requested.'),
+          findsOneWidget);
+    });
+
+    for (final closedStatus in ['expired', 'cancelled', 'completed']) {
+      testWidgets('$closedStatus donation cannot open the request modal',
+          (tester) async {
+        final api = _FakeApi(profile: _ngoProfile())
+          ..transportCoordination = {
+            'claim_id': 'claim-$closedStatus',
+            'provider_response': 'no',
+            'ngo_response': 'no',
+            'responsible_role': null,
+            'status': closedStatus,
+            'delivery_eligible': false,
+          };
+        _tallScreen(tester);
+        await tester.pumpWidget(_appWithState(
+          const TransportCoordinationCard(
+            claimId: 'claim-closed',
+            role: 'ngo',
+          ),
+          api,
+        ));
+        await tester.pumpAndSettle();
+
+        expect(find.text('This delivery is expired or no longer open.'),
+            findsOneWidget);
+        expect(find.text('REQUEST A VOLUNTEER'), findsNothing);
+        expect(
+          find.text('Both the provider and NGO are not handling the delivery.'),
+          findsNothing,
+        );
+        expect(api.volunteerDeliveryRequests, isEmpty);
+      });
+    }
 
     testWidgets('shows retry when persisted coordination cannot be read',
         (tester) async {
       final api = _FakeApi(profile: _ngoProfile())
         ..transportCoordinationReadError =
-            const ApiException(503, 'Database migration required.');
+            const ApiException(503, 'Database migration required.')
+        ..transportCoordination = {
+          'claim_id': 'claim-1',
+          'provider_response': null,
+          'ngo_response': null,
+          'responsible_role': null,
+          'status': 'awaiting_responses',
+          'delivery_eligible': true,
+        };
       _tallScreen(tester);
       await tester.pumpWidget(_appWithState(
         const TransportCoordinationCard(claimId: 'claim-1', role: 'ngo'),
@@ -711,6 +869,14 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('VOLUNTEER (OPTIONAL ROLE)'), findsNothing);
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Text &&
+              widget.data?.toLowerCase().contains('optional') == true,
+        ),
+        findsNothing,
+      );
       expect(
         find.text(
           'Take your first delivery and help good food reach the people who need it.',
@@ -1723,7 +1889,8 @@ void main() {
         matching: find.text('Donations')));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Matched NGOs'));
+    expect(find.text('Request NGO'), findsOneWidget);
+    await tester.tap(find.text('Request NGO'));
     await tester.pumpAndSettle();
 
     expect(api.persistedDonationOfferReads, 1);
@@ -1745,6 +1912,32 @@ void main() {
     expect(find.textContaining('saved candidate'), findsOneWidget);
     expect(find.text('2.5 km driving'), findsWidgets);
     expect(find.text('Distance score: 90 / 100'), findsOneWidget);
+  });
+
+  testWidgets('claimed provider donations cannot start a new NGO request',
+      (tester) async {
+    final api = _FakeApi(profile: _providerProfile())
+      ..donations = [
+        {
+          'id': 'donation-claimed',
+          'food_name': 'Claimed meals',
+          'food_category': 'prepared_meals',
+          'quantity': 10,
+          'servings': 20,
+          'status': 'claimed',
+        },
+      ];
+    _tallScreen(tester);
+    await tester
+        .pumpWidget(_appWithState(const ProviderDashboardScreen(), api));
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(
+        of: find.byType(BottomNavigationBar),
+        matching: find.text('Donations')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Request NGO'), findsNothing);
+    expect(api.persistedDonationOfferReads, 0);
   });
 
   testWidgets('persisted backend rank order is preserved in provider details',
