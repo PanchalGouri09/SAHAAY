@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_core_platform_interface/firebase_core_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -36,6 +38,10 @@ class _FakeFirebaseCorePlatform extends FirebasePlatform {
 /// from `signIn` reproduces the user cancelling the chooser, so the flow stops
 /// right after the chooser is shown - no Firebase or backend call happens.
 class _RecordingGoogleSignIn extends GoogleSignIn {
+  _RecordingGoogleSignIn({this.signOutError, this.signOutFuture});
+
+  final Object? signOutError;
+  final Future<GoogleSignInAccount?>? signOutFuture;
   final List<String> calls = <String>[];
 
   @override
@@ -47,6 +53,8 @@ class _RecordingGoogleSignIn extends GoogleSignIn {
   @override
   Future<GoogleSignInAccount?> signOut() async {
     calls.add('signOut');
+    if (signOutError != null) throw signOutError!;
+    if (signOutFuture != null) return signOutFuture!;
     return null;
   }
 }
@@ -67,5 +75,45 @@ void main() {
     expect(result, isNull); // cancelled at the chooser
     expect(google.calls, <String>['signOut', 'signIn'],
         reason: 'signOut() must precede signIn() to force the account chooser');
+  });
+
+  test('Google picker failures produce a safe retryable message', () async {
+    final google = _RecordingGoogleSignIn(
+      signOutError: StateError('private platform detail'),
+    );
+    final service = FirebaseAuthService(googleSignIn: google);
+
+    await expectLater(
+      service.signInWithGoogle(),
+      throwsA(
+        isA<AuthException>().having(
+          (error) => error.message,
+          'message',
+          'Could not open Google sign-in. Check Google Play services and '
+              'try again.',
+        ),
+      ),
+    );
+    expect(google.calls, <String>['signOut']);
+  });
+
+  test('Google sign-in times out instead of waiting forever', () async {
+    final signOut = Completer<GoogleSignInAccount?>();
+    final service = FirebaseAuthService(
+      googleSignIn: _RecordingGoogleSignIn(signOutFuture: signOut.future),
+      googleSignInTimeout: const Duration(milliseconds: 1),
+    );
+
+    await expectLater(
+      service.signInWithGoogle(),
+      throwsA(
+        isA<AuthException>().having(
+          (error) => error.message,
+          'message',
+          'Google sign-in timed out while account chooser. Check your '
+              'connection and try again.',
+        ),
+      ),
+    );
   });
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 import 'api_service.dart';
@@ -59,12 +60,17 @@ class FirebaseAuthService {
   final FirebaseAuth _auth;
   final ApiService _api;
   final GoogleSignIn _googleSignIn;
+  final Duration _googleSignInTimeout;
 
   FirebaseAuthService(
-      {FirebaseAuth? auth, ApiService? api, GoogleSignIn? googleSignIn})
+      {FirebaseAuth? auth,
+      ApiService? api,
+      GoogleSignIn? googleSignIn,
+      Duration googleSignInTimeout = const Duration(seconds: 60)})
       : _auth = auth ?? FirebaseAuth.instance,
         _api = api ?? ApiService(auth: auth ?? FirebaseAuth.instance),
-        _googleSignIn = googleSignIn ?? GoogleSignIn();
+        _googleSignIn = googleSignIn ?? GoogleSignIn(),
+        _googleSignInTimeout = googleSignInTimeout;
 
   ApiService get api => _api;
 
@@ -153,6 +159,7 @@ class FirebaseAuthService {
   /// Identity is always re-derrived server-side from the verified Firebase
   /// token; no firebase_uid is ever sent from the client.
   Future<AuthProfile?> signInWithGoogle() async {
+    var stage = 'account chooser';
     try {
       // Force the account chooser on EVERY tap. google_sign_in silently reuses
       // the last-used account otherwise, so a user could never switch Google
@@ -160,25 +167,73 @@ class FirebaseAuthService {
       // OAuth session; the Firebase session is untouched until the credential
       // below succeeds, and choosing an already-enrolled account still logs
       // straight in (GET /profile resolves its stored role - no duplicate).
-      await _googleSignIn.signOut();
-      final googleUser = await _googleSignIn.signIn();
+      await _googleSignIn.signOut().timeout(_googleSignInTimeout);
+      final googleUser =
+          await _googleSignIn.signIn().timeout(_googleSignInTimeout);
       if (googleUser == null) return null; // user cancelled the picker
-      final googleAuth = await googleUser.authentication;
+      stage = 'Google token retrieval';
+      final googleAuth =
+          await googleUser.authentication.timeout(_googleSignInTimeout);
+      if (googleAuth.idToken == null || googleAuth.idToken!.isEmpty) {
+        throw const AuthException(
+          'Google did not provide a sign-in token. Check the app Google '
+          'configuration and try again.',
+        );
+      }
+      stage = 'Firebase credential exchange';
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );
-      final userCredential = await _auth.signInWithCredential(credential);
-      return await _profileForUser(userCredential.user);
+      final userCredential = await _auth
+          .signInWithCredential(credential)
+          .timeout(_googleSignInTimeout);
+      stage = 'SAHAAY profile lookup';
+      return await _profileForUser(userCredential.user)
+          .timeout(_googleSignInTimeout);
     } on FirebaseAuthException catch (error) {
+      debugPrint(
+        'Google sign-in failed stage=$stage firebase_code=${error.code}',
+      );
       throw AuthException(_messageFor(error));
     } on ApiException catch (error) {
       if (error.statusCode == 404) return null;
+      debugPrint(
+        'Google sign-in failed stage=$stage backend_status=${error.statusCode}',
+      );
       throw AuthException(error.message);
     } on AuthException {
       rethrow; // preserve the specific adoption conflict message
-    } catch (_) {
-      throw const AuthException('Google sign-in failed. Please try again.');
+    } on TimeoutException {
+      debugPrint('Google sign-in timed out stage=$stage');
+      throw AuthException(
+        'Google sign-in timed out while $stage. Check your connection and '
+        'try again.',
+      );
+    } catch (error) {
+      debugPrint(
+        'Google sign-in failed stage=$stage error_type=${error.runtimeType}',
+      );
+      throw AuthException(_googleStageFailureMessage(stage));
+    }
+  }
+
+  String _googleStageFailureMessage(String stage) {
+    switch (stage) {
+      case 'account chooser':
+        return 'Could not open Google sign-in. Check Google Play services '
+            'and try again.';
+      case 'Google token retrieval':
+        return 'Google account selected, but its sign-in token could not be '
+            'retrieved. Check the app Google configuration and try again.';
+      case 'Firebase credential exchange':
+        return 'Google account selected, but secure sign-in with Firebase '
+            'failed. Please try again.';
+      case 'SAHAAY profile lookup':
+        return 'Google sign-in succeeded, but your SAHAAY profile could not '
+            'be loaded. Check your connection and try again.';
+      default:
+        return 'Google sign-in failed. Please try again.';
     }
   }
 

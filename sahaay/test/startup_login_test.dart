@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:firebase_core_platform_interface/firebase_core_platform_interface.dart';
@@ -302,7 +303,9 @@ void main() {
 
     testWidgets('"Continue with Google" invokes the existing Google flow',
         (WidgetTester tester) async {
-      await tester.pumpWidget(withState(const LoginScreen()));
+      await tester.pumpWidget(withLoginState(
+        _LoginAppState(googlePending: Completer<AuthProfile?>()),
+      ));
 
       final button = find.ancestor(
         of: find.text('Continue with Google'),
@@ -448,6 +451,32 @@ void main() {
       expect(find.byType(LoginScreen), findsOneWidget);
       expect(find.byType(RoleSelectionScreen), findsNothing);
     });
+
+    testWidgets('Google sign-in failure clears loading and allows retry',
+        (WidgetTester tester) async {
+      const message = 'Google account selected, but secure sign-in with '
+          'Firebase failed. Please try again.';
+      final state = _LoginAppState(
+        googleError: const AuthException(message),
+      );
+      await tester.pumpWidget(withLoginState(state));
+      final googleButton = find.ancestor(
+        of: find.text('Continue with Google'),
+        matching: find.byType(OutlinedButton),
+      );
+
+      await tester.tap(googleButton);
+      await tester.pumpAndSettle();
+
+      expect(find.text(message), findsOneWidget);
+      expect(find.text('Continue with Google'), findsOneWidget);
+      expect(find.byType(LoginScreen), findsOneWidget);
+
+      await tester.tap(googleButton);
+      await tester.pumpAndSettle();
+      expect(state.googleAttempts, 2);
+      expect(find.text('Continue with Google'), findsOneWidget);
+    });
   });
 
   group('register navigation', () {
@@ -511,12 +540,15 @@ class _LoginAppState extends AppState {
   _LoginAppState({
     this.profile,
     this.googleError,
+    this.googlePending,
     this.hasFirebaseSession = false,
   }) : super(FirebaseAuthService());
 
   final AuthProfile? profile;
   final AuthException? googleError;
+  final Completer<AuthProfile?>? googlePending;
   final bool hasFirebaseSession;
+  int googleAttempts = 0;
 
   @override
   bool get hasFirebaseUser => hasFirebaseSession;
@@ -528,6 +560,9 @@ class _LoginAppState extends AppState {
 
   @override
   Future<AuthProfile?> loginWithGoogle() async {
+    googleAttempts++;
+    final pending = googlePending;
+    if (pending != null) return pending.future;
     if (googleError != null) throw googleError!;
     _applyTestProfile();
     return profile;

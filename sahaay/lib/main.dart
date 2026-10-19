@@ -3218,7 +3218,6 @@ class _LoginScreenState extends State<LoginScreen>
       if (!mounted) return;
       if (profile != null) {
         // Existing SAHAAY user -> straight to their dashboard.
-        setState(() => _googleLoading = false);
         Navigator.of(context).pushAndRemoveUntil(
             MaterialPageRoute(builder: (_) => const RoleRouter()),
             (route) => false);
@@ -3226,11 +3225,9 @@ class _LoginScreenState extends State<LoginScreen>
       }
       if (!state.hasFirebaseUser) {
         // User cancelled the Google account picker; nothing changed.
-        setState(() => _googleLoading = false);
         return;
       }
       // Firebase session exists but no SAHAAY profile -> first-time enrollment.
-      setState(() => _googleLoading = false);
       await Navigator.of(context).push(MaterialPageRoute(
           builder: (_) => const RoleSelectionScreen(googleEnrollment: true)));
       if (!mounted) return;
@@ -3241,17 +3238,15 @@ class _LoginScreenState extends State<LoginScreen>
       }
     } on AuthException catch (error) {
       if (mounted) {
-        setState(() {
-          _googleLoading = false;
-          _error = error.message;
-        });
+        setState(() => _error = error.message);
       }
     } catch (_) {
       if (mounted) {
-        setState(() {
-          _googleLoading = false;
-          _error = 'Something went wrong. Please try again.';
-        });
+        setState(() => _error = 'Something went wrong. Please try again.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _googleLoading = false);
       }
     }
   }
@@ -9622,7 +9617,7 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
         _offersLoading = false;
         _offersLoaded = true;
       });
-    } catch (error, stackTrace) {
+    } catch (error) {
       debugPrint(
           'Could not load NGO donation offers error_type=${error.runtimeType}');
       if (!mounted) return;
