@@ -1,8 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform, debugPrint, kIsWeb;
+    show
+        TargetPlatform,
+        defaultTargetPlatform,
+        debugPrint,
+        kIsWeb,
+        visibleForTesting;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'notification_copy.dart';
@@ -10,23 +16,56 @@ import 'notification_copy.dart';
 /// Firebase Cloud Messaging + local rendering for SAHAAY.
 ///
 /// FCM delivers the push; this service requests the OS default sound on Android:
-///  * it creates the high-importance `sahaay_notifications` channel the backend
-///    targets, so a background/terminated push is shown in the tray and requests
-///    the default sound when permitted by the OS and channel settings;
+///  * it creates the high-importance channel the backend targets, so a
+///    background/terminated push is shown in the tray and requests the custom
+///    alert sound when permitted by the OS and channel settings;
 ///  * it renders a foreground push itself (FCM does not show foreground
 ///    messages), again through the same channel.
 class PushNotifications {
   PushNotifications._();
 
-  static const String channelId = 'sahaay_notifications';
+  static const String channelId = 'sahaay_notifications_v2';
   static const String channelName = 'SAHAAY Notifications';
   static const String channelDescription =
       'Donation, claim, pickup and delivery updates from SAHAAY.';
+  static const String notificationSound = 'sahaay_ting_ting';
+
+  @visibleForTesting
+  static const AndroidNotificationChannel androidChannel =
+      AndroidNotificationChannel(
+    channelId,
+    channelName,
+    description: channelDescription,
+    importance: Importance.max,
+    playSound: true,
+    sound: RawResourceAndroidNotificationSound(notificationSound),
+    enableVibration: true,
+  );
 
   static final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
 
   static void Function(String? payload)? onNotificationTap;
+
+  static StreamSubscription<String> listenForTokenRefresh({
+    required void Function(String token) onToken,
+    Stream<String>? tokenStream,
+    void Function(Object error)? onError,
+  }) {
+    return (tokenStream ?? FirebaseMessaging.instance.onTokenRefresh).listen(
+      (token) {
+        if (token.isNotEmpty) onToken(token);
+      },
+      onError: onError,
+    );
+  }
+
+  static StreamSubscription<RemoteMessage> listenForForegroundMessages({
+    required void Function(RemoteMessage message) onMessage,
+    Stream<RemoteMessage>? messageStream,
+  }) {
+    return (messageStream ?? FirebaseMessaging.onMessage).listen(onMessage);
+  }
 
   static const NotificationDetails _foregroundDetails = NotificationDetails(
     android: AndroidNotificationDetails(
@@ -38,6 +77,7 @@ class PushNotifications {
       importance: Importance.max,
       priority: Priority.high,
       playSound: true,
+      sound: RawResourceAndroidNotificationSound(notificationSound),
       enableVibration: true,
     ),
   );
@@ -60,16 +100,7 @@ class PushNotifications {
       if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
       final android = _plugin.resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin>();
-      await android?.createNotificationChannel(
-        const AndroidNotificationChannel(
-          channelId,
-          channelName,
-          description: channelDescription,
-          importance: Importance.max,
-          playSound: true,
-          enableVibration: true,
-        ),
-      );
+      await android?.createNotificationChannel(androidChannel);
     } catch (error) {
       debugPrint(
           'Local notification initialization failed error_type=${error.runtimeType}');

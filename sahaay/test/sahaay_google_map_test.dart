@@ -85,6 +85,9 @@ void main() {
           isFalse);
       expect(const SahaayMapPoint(latitude: 18.52, longitude: 181).isUsable,
           isFalse);
+      expect(const SahaayMapPoint(latitude: 0, longitude: 0).isUsable, isFalse);
+      expect(
+          const SahaayMapPoint(latitude: 0, longitude: 73.85).isUsable, isTrue);
     });
   });
 
@@ -254,13 +257,50 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(seconds: 20));
 
-      expect(
-          find.textContaining('Map could not be initialized'), findsOneWidget);
+      expect(find.textContaining('Google Maps unavailable'), findsOneWidget);
       expect(find.text('Retry map'), findsOneWidget);
 
+      final initialMap = tester.widget<GoogleMap>(find.byType(GoogleMap));
       await tester.tap(find.text('Retry map'));
       await tester.pump();
-      expect(find.text('Loading map…'), findsOneWidget);
+      final retriedMap = tester.widget<GoogleMap>(find.byType(GoogleMap));
+      expect(initialMap.key, const ValueKey(0));
+      expect(retriedMap.key, const ValueKey(1));
+    });
+
+    testWidgets('renders distinct pickup and destination marker coordinates',
+        (WidgetTester tester) async {
+      await tester.pumpWidget(const MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 320,
+            height: 220,
+            child: SahaayGoogleMap(
+              points: [
+                SahaayMapPoint(
+                    latitude: 18.52, longitude: 73.85, title: 'Pickup'),
+                SahaayMapPoint(
+                    latitude: 18.53, longitude: 73.86, title: 'Drop-off'),
+              ],
+            ),
+          ),
+        ),
+      ));
+
+      final markers = tester.widget<GoogleMap>(find.byType(GoogleMap)).markers;
+      expect(markers, hasLength(2));
+      expect(
+        markers
+            .map((marker) =>
+                (marker.position.latitude, marker.position.longitude))
+            .toSet(),
+        {
+          (18.52, 73.85),
+          (18.53, 73.86),
+        },
+      );
+      expect(markers.map((marker) => marker.infoWindow.title).toSet(),
+          {'Pickup', 'Drop-off'});
     });
   });
 

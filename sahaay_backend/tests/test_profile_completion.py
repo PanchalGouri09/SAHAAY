@@ -171,13 +171,9 @@ def test_profile_update_recomputes_completion_from_saved_role_row(monkeypatch):
         def table(self, name):
             return _Table(name)
 
-    monkeypatch.setattr(
-        profile_router, "get_supabase_client", lambda: _Client()
-    )
+    monkeypatch.setattr(profile_router, "get_supabase_client", lambda: _Client())
     response = profile_router.update_profile(
-        ProfileUpdate.model_validate(
-            {"ngo": {"dietary_preferences": ["vegetarian"]}}
-        ),
+        ProfileUpdate.model_validate({"ngo": {"dietary_preferences": ["vegetarian"]}}),
         BackgroundTasks(),
         user,
         None,
@@ -223,9 +219,7 @@ def test_complete_eligible_ngo_profile_save_schedules_matching_refresh(monkeypat
     tasks = BackgroundTasks()
 
     response = profile_router.update_profile(
-        ProfileUpdate.model_validate(
-            {"ngo": {"dietary_preferences": ["vegetarian"]}}
-        ),
+        ProfileUpdate.model_validate({"ngo": {"dietary_preferences": ["vegetarian"]}}),
         tasks,
         profile,
         _verified_firebase_user(),
@@ -245,9 +239,7 @@ def test_complete_eligible_ngo_profile_save_schedules_matching_refresh(monkeypat
         ("91 98765 43210", "9876543210"),
     ],
 )
-def test_profile_creation_phone_fields_normalize_indian_mobile_numbers(
-    value, expected
-):
+def test_profile_creation_phone_fields_normalize_indian_mobile_numbers(value, expected):
     create = ProfileCreate(
         full_name="Volunteer",
         email="volunteer@example.org",
@@ -326,13 +318,11 @@ def test_contact_phone_verification_requires_trusted_number_to_match_saved_numbe
     assert contact_verification_state(profile, matching_claim)["phone_verified"]
 
     mismatched_claim = {**matching_claim, "phone_number": "+919876543211"}
-    assert not contact_verification_state(profile, mismatched_claim)[
+    assert not contact_verification_state(profile, mismatched_claim)["phone_verified"]
+    # A valid number string saved by the client is not itself proof of ownership.
+    assert not contact_verification_state(profile, {"phone_number": None})[
         "phone_verified"
     ]
-    # A valid number string saved by the client is not itself proof of ownership.
-    assert not contact_verification_state(
-        profile, {"phone_number": None}
-    )["phone_verified"]
 
 
 def test_profile_phone_change_notifies_only_for_a_real_normalized_change(
@@ -372,9 +362,7 @@ def test_profile_phone_change_notifies_only_for_a_real_normalized_change(
         def table(self, name):
             return _Table(name)
 
-    monkeypatch.setattr(
-        profile_router, "get_supabase_client", lambda: _Client()
-    )
+    monkeypatch.setattr(profile_router, "get_supabase_client", lambda: _Client())
     monkeypatch.setattr(
         profile_router.notification_service,
         "contact_phone_updated",
@@ -456,9 +444,7 @@ def test_backend_offer_acceptance_requires_profile_completion_not_legacy_flag(
         "respond_to_offer",
         lambda *_args, **_kwargs: {"status": "accepted"},
     )
-    response = donation_offers.respond(
-        "offer-1", payload, _ngo(verified=False)
-    )
+    response = donation_offers.respond("offer-1", payload, _ngo(verified=False))
     assert response["status"] == "accepted"
 
 
@@ -476,7 +462,7 @@ def test_backend_claim_path_rejects_incomplete_ngo():
 def test_contact_verification_uses_only_signed_firebase_claims(monkeypatch):
     monkeypatch.setattr(
         "app.config.get_settings",
-        lambda: type("Settings", (), {"firebase_phone_auth_enabled": True})(),
+        lambda: type("Settings", (), {"firebase_phone_auth_enabled": False})(),
     )
     profile = _provider()
     valid = {
@@ -489,8 +475,9 @@ def test_contact_verification_uses_only_signed_firebase_claims(monkeypatch):
     assert state == {
         "email_verified": True,
         "phone_verified": True,
-        "phone_auth_configured": True,
+        "phone_auth_configured": False,
     }
+    require_verified_contacts(profile, valid, action="accepting a volunteer task")
 
     untrusted = {
         **valid,
@@ -501,6 +488,7 @@ def test_contact_verification_uses_only_signed_firebase_claims(monkeypatch):
         require_verified_contacts(profile, untrusted, action="creating a donation")
     assert error.value.status_code == 403
     assert "phone verified" in error.value.detail
+    assert "phone verification enabled" not in error.value.detail
 
 
 def test_claim_api_accepts_authenticated_complete_ngo_without_phone_auth(
@@ -526,10 +514,18 @@ def test_claim_api_accepts_authenticated_complete_ngo_without_phone_auth(
 
         def execute(self):
             if self.table_name == "claims":
-                return type("Response", (), {"data": [{
-                    "id": "claim-1",
-                    **self.inserted,
-                }]})()
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "data": [
+                            {
+                                "id": "claim-1",
+                                **self.inserted,
+                            }
+                        ]
+                    },
+                )()
             return type("Response", (), {"data": None})()
 
     class _ClaimClient:

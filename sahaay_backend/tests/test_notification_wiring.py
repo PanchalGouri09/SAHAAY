@@ -112,11 +112,12 @@ class _Table:
                     for clause in value.split(","):
                         field, operator, raw = clause.split(".", 2)
                         if operator == "eq":
-                            expected = raw == "true" if raw in {"true", "false"} else raw
+                            expected = (
+                                raw == "true" if raw in {"true", "false"} else raw
+                            )
                             alternatives.append((field, expected))
                     if not any(
-                        row.get(field) == expected
-                        for field, expected in alternatives
+                        row.get(field) == expected for field, expected in alternatives
                     ):
                         keep = False
                     continue
@@ -154,7 +155,10 @@ class _Table:
                 (
                     row
                     for row in table_rows
-                    if all(row.get(column) == values.get(column) for column in conflict_columns)
+                    if all(
+                        row.get(column) == values.get(column)
+                        for column in conflict_columns
+                    )
                 ),
                 None,
             )
@@ -268,7 +272,8 @@ class _FakeSupabase:
     def rpc(self, name: str, params: dict):
         if name == "issue_donation_handover_code":
             claim = next(
-                row for row in self.rows("claims")
+                row
+                for row in self.rows("claims")
                 if row.get("id") == params["p_claim_id"]
                 and row.get("donation_id") == params["p_donation_id"]
             )
@@ -282,7 +287,8 @@ class _FakeSupabase:
             return _Rpc({"status": "issued"})
         if name == "verify_donation_handover":
             claim = next(
-                row for row in self.rows("claims")
+                row
+                for row in self.rows("claims")
                 if row.get("id") == params["p_claim_id"]
                 and row.get("donation_id") == params["p_donation_id"]
             )
@@ -319,7 +325,8 @@ class _FakeSupabase:
             return _Rpc({"status": "verified", "verified_at": verified_at})
         if name == "confirm_claim_volunteer_assignment":
             delivery = next(
-                row for row in self.rows("deliveries")
+                row
+                for row in self.rows("deliveries")
                 if row.get("id") == params["p_delivery_id"]
                 and row.get("volunteer_id") is None
             )
@@ -327,7 +334,8 @@ class _FakeSupabase:
                 {"volunteer_id": params["p_volunteer_id"], "status": "assigned"}
             )
             coordination = next(
-                row for row in self.rows("claim_transport_coordination")
+                row
+                for row in self.rows("claim_transport_coordination")
                 if row.get("claim_id") == delivery.get("claim_id")
                 and row.get("status") == "searching_for_volunteers"
             )
@@ -342,12 +350,15 @@ class _FakeSupabase:
             )
         if name == "respond_to_claim_transport":
             coordination = next(
-                row for row in self.rows("claim_transport_coordination")
+                row
+                for row in self.rows("claim_transport_coordination")
                 if row.get("claim_id") == params["p_claim_id"]
             )
             role = params["p_actor_role"]
             coordination[f"{role}_response"] = params["p_response"]
-            if params["p_response"] == "yes" and not coordination.get("responsible_role"):
+            if params["p_response"] == "yes" and not coordination.get(
+                "responsible_role"
+            ):
                 coordination["responsible_role"] = role
                 coordination["status"] = f"{role}_transport"
             if (
@@ -549,13 +560,21 @@ def _matching_ngo(user_id: str, ngo_id: str, city: str = "Pune", **overrides):
 
 
 def test_donation_created_notifies_only_same_city_complete_ngos(fake, fcm) -> None:
-    fake.seed("ngos", [
-        _matching_ngo("u-ngo-1", "ngo-1"),
-        _matching_ngo("u-ngo-2", "ngo-2"),
-        _matching_ngo("u-ngo-3", "ngo-3", available_to=None),
-        _matching_ngo("u-ngo-4", "ngo-4", city="Mumbai"),
-    ])
-    donation = {"id": "don-1", "food_name": "Vegetable Rice", "quantity": 12.5, "unit": "kg"}
+    fake.seed(
+        "ngos",
+        [
+            _matching_ngo("u-ngo-1", "ngo-1"),
+            _matching_ngo("u-ngo-2", "ngo-2"),
+            _matching_ngo("u-ngo-3", "ngo-3", available_to=None),
+            _matching_ngo("u-ngo-4", "ngo-4", city="Mumbai"),
+        ],
+    )
+    donation = {
+        "id": "don-1",
+        "food_name": "Vegetable Rice",
+        "quantity": 12.5,
+        "unit": "kg",
+    }
 
     notification_service.donation_created(
         fake,
@@ -575,11 +594,16 @@ def test_donation_created_notifies_only_same_city_complete_ngos(fake, fcm) -> No
     assert all(c[3]["donation_id"] == "don-1" for c in fcm.calls)
 
 
-def test_donation_created_notifies_profile_ready_ngo_without_legal_status(fake, fcm) -> None:
-    fake.seed("ngos", [
-        _matching_ngo("u-ngo-ready", "ngo-ready"),
-        _matching_ngo("u-unready", "ngo-unready", preferred_food_types=[]),
-    ])
+def test_donation_created_notifies_profile_ready_ngo_without_legal_status(
+    fake, fcm
+) -> None:
+    fake.seed(
+        "ngos",
+        [
+            _matching_ngo("u-ngo-ready", "ngo-ready"),
+            _matching_ngo("u-unready", "ngo-unready", preferred_food_types=[]),
+        ],
+    )
 
     notification_service.donation_created(
         fake,
@@ -592,9 +616,12 @@ def test_donation_created_notifies_profile_ready_ngo_without_legal_status(fake, 
 
 
 def test_donation_created_without_provider_city_notifies_nobody(fake, fcm) -> None:
-    fake.seed("ngos", [
-        _matching_ngo("u-ngo-1", "ngo-1"),
-    ])
+    fake.seed(
+        "ngos",
+        [
+            _matching_ngo("u-ngo-1", "ngo-1"),
+        ],
+    )
 
     notification_service.donation_created(
         fake,
@@ -614,10 +641,13 @@ def test_creating_a_donation_wires_the_donation_created_event(
 
     from app.services.ai_client import AIClient, get_ai_client
 
-    fake.seed("ngos", [
-        _matching_ngo("u-ngo-1", "ngo-1"),
-        _matching_ngo("u-ngo-2", "ngo-2", city="Mumbai"),
-    ])
+    fake.seed(
+        "ngos",
+        [
+            _matching_ngo("u-ngo-1", "ngo-1"),
+            _matching_ngo("u-ngo-2", "ngo-2", city="Mumbai"),
+        ],
+    )
     app.dependency_overrides[get_current_profile] = lambda: {
         "id": "user-provider",
         "role": "provider",
@@ -694,27 +724,46 @@ _DONATION_UUID = "11111111-1111-1111-1111-111111111111"
 
 
 def _seed_claim_target(fake) -> None:
-    fake.seed("providers", [
-        {"id": "prov-1", "user_id": "u-provider", "organization_name": "Tasty Kitchen"},
-    ])
-    fake.seed("donations", [
-        {
-            "id": _DONATION_UUID,
-            "provider_id": "prov-1",
-            "food_name": "Vegetable Rice",
-            "quantity": 10.0,
-            "unit": "kg",
-            "pickup_address": "5 Kitchen Road",
-            "pickup_deadline": "2030-01-01T18:00:00Z",
-            "status": "available",
-        },
-    ])
+    fake.seed(
+        "providers",
+        [
+            {
+                "id": "prov-1",
+                "user_id": "u-provider",
+                "organization_name": "Tasty Kitchen",
+            },
+        ],
+    )
+    fake.seed(
+        "donations",
+        [
+            {
+                "id": _DONATION_UUID,
+                "provider_id": "prov-1",
+                "food_name": "Vegetable Rice",
+                "quantity": 10.0,
+                "unit": "kg",
+                "pickup_address": "5 Kitchen Road",
+                "pickup_deadline": "2030-01-01T18:00:00Z",
+                "status": "available",
+            },
+        ],
+    )
 
 
-def test_claim_created_notifies_provider_and_ignores_client_recipient(fake, fcm) -> None:
+def test_claim_created_notifies_provider_and_ignores_client_recipient(
+    fake, fcm
+) -> None:
     _seed_claim_target(fake)
-    _login("ngo", {"id": "ngo-1", "organization_name": "Feed The City",
-                   "address": "12 NGO Lane", "user_id_for_profile": "u-ngo"})
+    _login(
+        "ngo",
+        {
+            "id": "ngo-1",
+            "organization_name": "Feed The City",
+            "address": "12 NGO Lane",
+            "user_id_for_profile": "u-ngo",
+        },
+    )
 
     response = client.post(
         "/api/v1/claims",
@@ -730,7 +779,7 @@ def test_claim_created_notifies_provider_and_ignores_client_recipient(fake, fcm)
     assert response.status_code == 201, response.text
     rows = _notifications(fake)
     assert len(rows) == 1
-    assert rows[0]["user_id"] == "u-provider"          # server-derived recipient
+    assert rows[0]["user_id"] == "u-provider"  # server-derived recipient
     assert rows[0]["type"] == "claim_submitted"
     assert rows[0]["related_donation_id"] == _DONATION_UUID
     assert fcm.calls[0][0] == "u-provider"
@@ -741,7 +790,8 @@ def test_claim_creation_requires_ngo_role(fake, fcm) -> None:
     _login("provider", {"id": "prov-1", "organization_name": "Tasty Kitchen"})
 
     response = client.post(
-        "/api/v1/claims", json={"donation_id": _DONATION_UUID, "requested_quantity": 5.0}
+        "/api/v1/claims",
+        json={"donation_id": _DONATION_UUID, "requested_quantity": 5.0},
     )
 
     assert response.status_code == 403
@@ -753,21 +803,51 @@ def test_claim_creation_requires_ngo_role(fake, fcm) -> None:
 # C. Claim acceptance/status changes -> provider + displaced NGOs
 # ===========================================================================
 def test_claim_acceptance_notifies_provider_and_displaced_ngo(fake, fcm) -> None:
-    fake.seed("providers", [
-        {"id": "prov-1", "user_id": "u-provider", "organization_name": "Tasty Kitchen"},
-    ])
-    fake.seed("donations", [
-        {"id": "don-1", "provider_id": "prov-1", "food_name": "Vegetable Rice",
-         "status": "available"},
-    ])
-    fake.seed("ngos", [
-        {"id": "ngo-a", "user_id": "u-ngo-a", "organization_name": "NGO A"},
-        {"id": "ngo-b", "user_id": "u-ngo-b", "organization_name": "NGO B"},
-    ])
-    fake.seed("claims", [
-        {"id": "claim-a", "donation_id": "don-1", "ngo_id": "ngo-a", "status": "pending"},
-        {"id": "claim-b", "donation_id": "don-1", "ngo_id": "ngo-b", "status": "pending"},
-    ])
+    fake.seed(
+        "providers",
+        [
+            {
+                "id": "prov-1",
+                "user_id": "u-provider",
+                "organization_name": "Tasty Kitchen",
+            },
+        ],
+    )
+    fake.seed(
+        "donations",
+        [
+            {
+                "id": "don-1",
+                "provider_id": "prov-1",
+                "food_name": "Vegetable Rice",
+                "status": "available",
+            },
+        ],
+    )
+    fake.seed(
+        "ngos",
+        [
+            {"id": "ngo-a", "user_id": "u-ngo-a", "organization_name": "NGO A"},
+            {"id": "ngo-b", "user_id": "u-ngo-b", "organization_name": "NGO B"},
+        ],
+    )
+    fake.seed(
+        "claims",
+        [
+            {
+                "id": "claim-a",
+                "donation_id": "don-1",
+                "ngo_id": "ngo-a",
+                "status": "pending",
+            },
+            {
+                "id": "claim-b",
+                "donation_id": "don-1",
+                "ngo_id": "ngo-b",
+                "status": "pending",
+            },
+        ],
+    )
     _login("ngo", {"id": "ngo-a", "organization_name": "NGO A"})
 
     response = client.patch("/api/v1/claims/claim-a", params={"status": "accepted"})
@@ -829,16 +909,38 @@ def test_claim_acceptance_uses_human_copy_when_food_name_is_missing(fake, fcm) -
 
 
 def test_claim_cancelled_notifies_provider_with_cancelled_type(fake, fcm) -> None:
-    fake.seed("providers", [
-        {"id": "prov-1", "user_id": "u-provider", "organization_name": "Tasty Kitchen"},
-    ])
-    fake.seed("donations", [
-        {"id": "don-1", "provider_id": "prov-1", "food_name": "Vegetable Rice",
-         "status": "claimed"},
-    ])
-    fake.seed("claims", [
-        {"id": "claim-a", "donation_id": "don-1", "ngo_id": "ngo-a", "status": "accepted"},
-    ])
+    fake.seed(
+        "providers",
+        [
+            {
+                "id": "prov-1",
+                "user_id": "u-provider",
+                "organization_name": "Tasty Kitchen",
+            },
+        ],
+    )
+    fake.seed(
+        "donations",
+        [
+            {
+                "id": "don-1",
+                "provider_id": "prov-1",
+                "food_name": "Vegetable Rice",
+                "status": "claimed",
+            },
+        ],
+    )
+    fake.seed(
+        "claims",
+        [
+            {
+                "id": "claim-a",
+                "donation_id": "don-1",
+                "ngo_id": "ngo-a",
+                "status": "accepted",
+            },
+        ],
+    )
     _login("ngo", {"id": "ngo-a", "organization_name": "NGO A"})
 
     response = client.patch("/api/v1/claims/claim-a", params={"status": "cancelled"})
@@ -874,21 +976,33 @@ def test_escalation_rejection_notifies_the_claiming_ngo(fake, fcm) -> None:
 
     fake.seed("ngos", [{"id": "ngo-1", "user_id": "u-ngo-1"}])
     fake.seed("providers", [{"id": "prov-1", "user_id": "u-provider"}])
-    donation = {"id": "don-1", "provider_id": "prov-1", "food_name": "Vegetable Rice",
-                "status": "available",
-                "expiry_time": "2099-01-01T20:00:00+00:00"}
+    donation = {
+        "id": "don-1",
+        "provider_id": "prov-1",
+        "food_name": "Vegetable Rice",
+        "status": "available",
+        "expiry_time": "2099-01-01T20:00:00+00:00",
+    }
     fake.seed("donations", [dict(donation)])
-    fake.seed("claims", [
-        {"id": "claim-1", "donation_id": "don-1", "ngo_id": "ngo-1",
-         "status": "pending", "created_at": "2026-01-01T10:00:00+00:00"},
-    ])
+    fake.seed(
+        "claims",
+        [
+            {
+                "id": "claim-1",
+                "donation_id": "don-1",
+                "ngo_id": "ngo-1",
+                "status": "pending",
+                "created_at": "2026-01-01T10:00:00+00:00",
+            },
+        ],
+    )
 
     response = assess_donation_escalation(fake, _escalation_ai(), donation)
 
     assert response["action"] == "escalate"
     rows = _notifications(fake)
     assert len(rows) == 1
-    assert rows[0]["user_id"] == "u-ngo-1"          # the rejected claim's NGO
+    assert rows[0]["user_id"] == "u-ngo-1"  # the rejected claim's NGO
     assert rows[0]["type"] == "claim_rejected"
     assert rows[0]["related_donation_id"] == "don-1"
     assert rows[0]["message"] == (
@@ -904,16 +1018,30 @@ def test_escalation_rejection_notifies_the_claiming_ngo(fake, fcm) -> None:
 def test_escalation_keep_waiting_notifies_nobody(fake, fcm) -> None:
     from app.services.escalation import assess_donation_escalation
 
-    donation = {"id": "don-1", "provider_id": "prov-1", "food_name": "Rice",
-                "status": "available",
-                "expiry_time": "2099-01-01T20:00:00+00:00"}
+    donation = {
+        "id": "don-1",
+        "provider_id": "prov-1",
+        "food_name": "Rice",
+        "status": "available",
+        "expiry_time": "2099-01-01T20:00:00+00:00",
+    }
     fake.seed("donations", [dict(donation)])
-    fake.seed("claims", [
-        {"id": "claim-1", "donation_id": "don-1", "ngo_id": "ngo-1",
-         "status": "pending", "created_at": "2026-01-01T10:00:00+00:00"},
-    ])
+    fake.seed(
+        "claims",
+        [
+            {
+                "id": "claim-1",
+                "donation_id": "don-1",
+                "ngo_id": "ngo-1",
+                "status": "pending",
+                "created_at": "2026-01-01T10:00:00+00:00",
+            },
+        ],
+    )
 
-    response = assess_donation_escalation(fake, _escalation_ai("keep_waiting"), donation)
+    response = assess_donation_escalation(
+        fake, _escalation_ai("keep_waiting"), donation
+    )
 
     assert response["action"] == "keep_waiting"
     assert _notifications(fake) == []
@@ -923,30 +1051,70 @@ def test_escalation_keep_waiting_notifies_nobody(fake, fcm) -> None:
 # ===========================================================================
 # D/F. Delivery: volunteer assignment + status changes
 # ===========================================================================
-def _seed_delivery(fake, *, delivery_status="assigned", donation_status="claimed") -> None:
-    fake.seed("providers", [
-        {"id": "prov-1", "user_id": "u-provider", "organization_name": "Tasty Kitchen"},
-    ])
-    fake.seed("ngos", [
-        {"id": "ngo-1", "user_id": "u-ngo", "organization_name": "Feed The City"},
-    ])
-    fake.seed("donations", [
-        {"id": "don-1", "provider_id": "prov-1", "food_name": "Vegetable Rice",
-         "quantity": 10.0, "unit": "kg", "status": donation_status,
-         "expiry_time": "2030-01-01T20:00:00Z",
-         "pickup_deadline": "2030-01-01T13:00:00Z"},
-    ])
-    fake.seed("claims", [
-        {"id": "claim-1", "donation_id": "don-1", "ngo_id": "ngo-1",
-         "status": "accepted", "handover_verified_at": "2030-01-01T10:00:00Z"},
-    ])
-    fake.seed("deliveries", [
-        {"id": "del-1", "donation_id": "don-1", "claim_id": "claim-1",
-         "volunteer_id": "vol-1", "status": delivery_status},
-    ])
-    fake.seed("volunteers", [
-        {"id": "vol-1", "user_id": "u-volunteer"},
-    ])
+def _seed_delivery(
+    fake, *, delivery_status="assigned", donation_status="claimed"
+) -> None:
+    fake.seed(
+        "providers",
+        [
+            {
+                "id": "prov-1",
+                "user_id": "u-provider",
+                "organization_name": "Tasty Kitchen",
+            },
+        ],
+    )
+    fake.seed(
+        "ngos",
+        [
+            {"id": "ngo-1", "user_id": "u-ngo", "organization_name": "Feed The City"},
+        ],
+    )
+    fake.seed(
+        "donations",
+        [
+            {
+                "id": "don-1",
+                "provider_id": "prov-1",
+                "food_name": "Vegetable Rice",
+                "quantity": 10.0,
+                "unit": "kg",
+                "status": donation_status,
+                "expiry_time": "2030-01-01T20:00:00Z",
+                "pickup_deadline": "2030-01-01T13:00:00Z",
+            },
+        ],
+    )
+    fake.seed(
+        "claims",
+        [
+            {
+                "id": "claim-1",
+                "donation_id": "don-1",
+                "ngo_id": "ngo-1",
+                "status": "accepted",
+                "handover_verified_at": "2030-01-01T10:00:00Z",
+            },
+        ],
+    )
+    fake.seed(
+        "deliveries",
+        [
+            {
+                "id": "del-1",
+                "donation_id": "don-1",
+                "claim_id": "claim-1",
+                "volunteer_id": "vol-1",
+                "status": delivery_status,
+            },
+        ],
+    )
+    fake.seed(
+        "volunteers",
+        [
+            {"id": "vol-1", "user_id": "u-volunteer"},
+        ],
+    )
 
 
 def _login_volunteer():
@@ -956,13 +1124,16 @@ def _login_volunteer():
 def test_volunteer_acceptance_notifies_ngo_and_provider(fake, fcm) -> None:
     _seed_delivery(fake, delivery_status="unassigned", donation_status="available")
     fake.rows("deliveries")[0]["volunteer_id"] = None
-    fake.seed("claim_transport_coordination", [
-        {
-            "claim_id": "claim-1",
-            "status": "searching_for_volunteers",
-            "responsible_role": None,
-        },
-    ])
+    fake.seed(
+        "claim_transport_coordination",
+        [
+            {
+                "claim_id": "claim-1",
+                "status": "searching_for_volunteers",
+                "responsible_role": None,
+            },
+        ],
+    )
     _login_volunteer()
 
     response = client.post("/api/v1/deliveries/del-1/accept")
@@ -997,26 +1168,40 @@ def test_later_yes_responder_is_told_first_transport_winner(fake, fcm) -> None:
 def test_later_yes_response_preserves_winner_and_notifies_responder(fake, fcm) -> None:
     fake.seed("providers", [{"id": "provider-1", "user_id": "u-provider"}])
     fake.seed("ngos", [{"id": "ngo-1", "user_id": "u-ngo"}])
-    fake.seed("donations", [
-        {"id": "don-1", "provider_id": "provider-1", "food_name": "Rice"},
-    ])
-    fake.seed("claims", [
-        {"id": "claim-1", "donation_id": "don-1", "ngo_id": "ngo-1", "status": "accepted"},
-    ])
-    fake.seed("claim_transport_coordination", [
-        {
-            "claim_id": "claim-1",
-            "donation_id": "don-1",
-            "provider_id": "provider-1",
-            "ngo_id": "ngo-1",
-            "provider_response": "yes",
-            "provider_captain_name": "Provider Captain",
-            "provider_captain_phone": "9876543210",
-            "ngo_response": None,
-            "responsible_role": "provider",
-            "status": "provider_transport",
-        },
-    ])
+    fake.seed(
+        "donations",
+        [
+            {"id": "don-1", "provider_id": "provider-1", "food_name": "Rice"},
+        ],
+    )
+    fake.seed(
+        "claims",
+        [
+            {
+                "id": "claim-1",
+                "donation_id": "don-1",
+                "ngo_id": "ngo-1",
+                "status": "accepted",
+            },
+        ],
+    )
+    fake.seed(
+        "claim_transport_coordination",
+        [
+            {
+                "claim_id": "claim-1",
+                "donation_id": "don-1",
+                "provider_id": "provider-1",
+                "ngo_id": "ngo-1",
+                "provider_response": "yes",
+                "provider_captain_name": "Provider Captain",
+                "provider_captain_phone": "9876543210",
+                "ngo_response": None,
+                "responsible_role": "provider",
+                "status": "provider_transport",
+            },
+        ],
+    )
     _login("ngo", {"id": "ngo-1", "user_id_for_profile": "u-ngo"})
 
     response = client.post(
@@ -1055,7 +1240,9 @@ def test_delivered_status_notifies_both_parties(fake, fcm) -> None:
         "/api/v1/deliveries/del-1/status", json={"status": "delivered"}
     )
     assert repeated.status_code == 200
-    assert len([r for r in _notifications(fake) if r["type"] == "delivery_completed"]) == 2
+    assert (
+        len([r for r in _notifications(fake) if r["type"] == "delivery_completed"]) == 2
+    )
     reopened = client.patch(
         "/api/v1/deliveries/del-1/status", json={"status": "accepted"}
     )
@@ -1110,18 +1297,41 @@ def test_failed_delivery_quotes_the_real_failure_reason(fake, fcm) -> None:
 # E. Handover verified -> the provider
 # ===========================================================================
 def test_handover_verification_notifies_both_claim_participants(fake, fcm) -> None:
-    fake.seed("providers", [
-        {"id": "prov-1", "user_id": "u-provider", "organization_name": "Tasty Kitchen"},
-    ])
+    fake.seed(
+        "providers",
+        [
+            {
+                "id": "prov-1",
+                "user_id": "u-provider",
+                "organization_name": "Tasty Kitchen",
+            },
+        ],
+    )
     fake.seed("ngos", [{"id": "ngo-1", "user_id": "u-ngo"}])
-    fake.seed("donations", [
-        {"id": "don-1", "provider_id": "prov-1", "food_name": "Vegetable Rice",
-         "status": "claimed"},
-    ])
-    fake.seed("claims", [
-        {"id": "claim-1", "donation_id": "don-1", "ngo_id": "ngo-1",
-         "status": "accepted", "handover_code_hash": "hash", "handover_code_attempts": 0},
-    ])
+    fake.seed(
+        "donations",
+        [
+            {
+                "id": "don-1",
+                "provider_id": "prov-1",
+                "food_name": "Vegetable Rice",
+                "status": "claimed",
+            },
+        ],
+    )
+    fake.seed(
+        "claims",
+        [
+            {
+                "id": "claim-1",
+                "donation_id": "don-1",
+                "ngo_id": "ngo-1",
+                "status": "accepted",
+                "handover_code_hash": "hash",
+                "handover_code_attempts": 0,
+            },
+        ],
+    )
     _login("provider", {"id": "prov-1"})
 
     code_response = client.post("/api/v1/donations/don-1/handover/code")
@@ -1129,9 +1339,7 @@ def test_handover_verification_notifies_both_claim_participants(fake, fcm) -> No
     code = code_response.json()["handover_code"]
     _login("ngo", {"id": "ngo-1"})
 
-    verify = client.post(
-        "/api/v1/donations/don-1/handover/verify", json={"code": code}
-    )
+    verify = client.post("/api/v1/donations/don-1/handover/verify", json={"code": code})
 
     assert verify.status_code == 200, verify.text
     rows = _notifications(fake)
@@ -1147,9 +1355,7 @@ def test_handover_verification_notifies_both_claim_participants(fake, fcm) -> No
     # `handover_completed` event).
     completed = [r for r in rows if r["type"] == "handover_completed"]
     assert {r["user_id"] for r in completed} == {"u-provider", "u-ngo"}
-    assert all(
-        "receipt is still being prepared" in r["message"] for r in completed
-    )
+    assert all("receipt is still being prepared" in r["message"] for r in completed)
 
 
 # ===========================================================================
@@ -1157,12 +1363,15 @@ def test_handover_verification_notifies_both_claim_participants(fake, fcm) -> No
 # ===========================================================================
 def test_fcm_failure_never_breaks_the_business_event(fake, fcm) -> None:
     _seed_claim_target(fake)
-    _login("ngo", {"id": "ngo-1", "organization_name": "Feed The City",
-                   "address": "12 NGO Lane"})
+    _login(
+        "ngo",
+        {"id": "ngo-1", "organization_name": "Feed The City", "address": "12 NGO Lane"},
+    )
     fcm.raise_error = RuntimeError("FCM endpoint unreachable")
 
     response = client.post(
-        "/api/v1/claims", json={"donation_id": _DONATION_UUID, "requested_quantity": 5.0}
+        "/api/v1/claims",
+        json={"donation_id": _DONATION_UUID, "requested_quantity": 5.0},
     )
 
     # The business transaction completed AND the durable record exists —
@@ -1184,7 +1393,9 @@ def test_fcm_failure_never_breaks_a_delivery_update(fake, fcm) -> None:
     )
 
     assert response.status_code == 200, response.text
-    assert len([r for r in _notifications(fake) if r["type"] == "delivery_completed"]) == 2
+    assert (
+        len([r for r in _notifications(fake) if r["type"] == "delivery_completed"]) == 2
+    )
 
 
 def test_invalid_token_sender_keeps_the_persisted_record(monkeypatch) -> None:
@@ -1196,7 +1407,9 @@ def test_invalid_token_sender_keeps_the_persisted_record(monkeypatch) -> None:
 
     class _SenderDb:
         def __init__(self) -> None:
-            self.rows = [{"user_id": "u-1", "token": "stale-token", "platform": "android"}]
+            self.rows = [
+                {"user_id": "u-1", "token": "stale-token", "platform": "android"}
+            ]
 
         def table(self, _name):
             db = self.rows
@@ -1216,9 +1429,7 @@ def test_invalid_token_sender_keeps_the_persisted_record(monkeypatch) -> None:
 
                 def execute(self):
                     if state["deleting"]:
-                        db[:] = [
-                            r for r in db if r.get(state["key"]) != state["value"]
-                        ]
+                        db[:] = [r for r in db if r.get(state["key"]) != state["value"]]
                         return _Result([])
                     return _Result(
                         [dict(r) for r in db if r.get(state["key"]) == state["value"]]
@@ -1239,24 +1450,33 @@ def test_invalid_token_sender_keeps_the_persisted_record(monkeypatch) -> None:
 
     fake = _FakeSupabase()
     row = notification_service.notify(
-        fake, "u-1", title="T", message="B", notif_type="claim_submitted",
+        fake,
+        "u-1",
+        title="T",
+        message="B",
+        notif_type="claim_submitted",
         related_donation_id="don-1",
     )
 
     assert row is not None
     assert len(fake.rows("notifications")) == 1
-    assert sender_db.rows == []          # stale token cleaned up by the sender
+    assert sender_db.rows == []  # stale token cleaned up by the sender
 
 
-def test_android_push_uses_the_shared_high_importance_default_sound_channel() -> None:
-    from app.services.fcm_sender import ANDROID_CHANNEL_ID, _android_config
+def test_android_push_uses_the_shared_high_importance_ting_ting_channel() -> None:
+    from app.services.fcm_sender import (
+        ANDROID_CHANNEL_ID,
+        ANDROID_NOTIFICATION_SOUND,
+        _android_config,
+    )
 
     notification = _android_config().notification
 
-    assert ANDROID_CHANNEL_ID == "sahaay_notifications"
+    assert ANDROID_CHANNEL_ID == "sahaay_notifications_v2"
     assert notification.channel_id == ANDROID_CHANNEL_ID
-    assert notification.sound == "default"
-    assert notification.default_sound is True
+    assert notification.sound == ANDROID_NOTIFICATION_SOUND
+    assert notification.default_sound is False
+    assert ANDROID_NOTIFICATION_SOUND == "sahaay_ting_ting"
 
 
 # ===========================================================================
@@ -1366,12 +1586,8 @@ def test_different_titles_on_same_donation_are_both_kept(fake, fcm) -> None:
         notif_type="claim_submitted",
         related_donation_id="don-1",
     )
-    notification_service.notify(
-        fake, "u-provider", title="NGO A claimed Rice", **base
-    )
-    notification_service.notify(
-        fake, "u-provider", title="NGO B claimed Rice", **base
-    )
+    notification_service.notify(fake, "u-provider", title="NGO A claimed Rice", **base)
+    notification_service.notify(fake, "u-provider", title="NGO B claimed Rice", **base)
 
     assert len(_notifications(fake)) == 2
     assert len(fcm.calls) == 2
@@ -1404,14 +1620,29 @@ def test_notifications_require_authentication(fake) -> None:
 
 
 def test_notifications_list_is_scoped_to_the_authenticated_user(fake) -> None:
-    fake.seed("notifications", [
-        {"id": "n-1", "user_id": "u-1", "title": "Mine", "message": "m",
-         "is_read": False},
-        {"id": "n-2", "user_id": "u-2", "title": "Theirs", "message": "m",
-         "is_read": False},
-    ])
+    fake.seed(
+        "notifications",
+        [
+            {
+                "id": "n-1",
+                "user_id": "u-1",
+                "title": "Mine",
+                "message": "m",
+                "is_read": False,
+            },
+            {
+                "id": "n-2",
+                "user_id": "u-2",
+                "title": "Theirs",
+                "message": "m",
+                "is_read": False,
+            },
+        ],
+    )
     app.dependency_overrides[get_current_profile] = lambda: {
-        "id": "u-1", "role": "volunteer", "volunteers": [{"id": "vol-1"}],
+        "id": "u-1",
+        "role": "volunteer",
+        "volunteers": [{"id": "vol-1"}],
     }
 
     response = client.get("/api/v1/notifications")
@@ -1422,12 +1653,22 @@ def test_notifications_list_is_scoped_to_the_authenticated_user(fake) -> None:
 
 
 def test_cannot_mark_another_users_notification_read(fake) -> None:
-    fake.seed("notifications", [
-        {"id": "n-2", "user_id": "u-2", "title": "Theirs", "message": "m",
-         "is_read": False},
-    ])
+    fake.seed(
+        "notifications",
+        [
+            {
+                "id": "n-2",
+                "user_id": "u-2",
+                "title": "Theirs",
+                "message": "m",
+                "is_read": False,
+            },
+        ],
+    )
     app.dependency_overrides[get_current_profile] = lambda: {
-        "id": "u-1", "role": "volunteer", "volunteers": [{"id": "vol-1"}],
+        "id": "u-1",
+        "role": "volunteer",
+        "volunteers": [{"id": "vol-1"}],
     }
 
     response = client.patch("/api/v1/notifications/n-2/read")
@@ -1437,12 +1678,22 @@ def test_cannot_mark_another_users_notification_read(fake) -> None:
 
 
 def test_own_notification_can_be_marked_read(fake) -> None:
-    fake.seed("notifications", [
-        {"id": "n-1", "user_id": "u-1", "title": "Mine", "message": "m",
-         "is_read": False},
-    ])
+    fake.seed(
+        "notifications",
+        [
+            {
+                "id": "n-1",
+                "user_id": "u-1",
+                "title": "Mine",
+                "message": "m",
+                "is_read": False,
+            },
+        ],
+    )
     app.dependency_overrides[get_current_profile] = lambda: {
-        "id": "u-1", "role": "volunteer", "volunteers": [{"id": "vol-1"}],
+        "id": "u-1",
+        "role": "volunteer",
+        "volunteers": [{"id": "vol-1"}],
     }
 
     response = client.patch("/api/v1/notifications/n-1/read")

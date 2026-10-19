@@ -51,7 +51,7 @@ for X" empty state distinct from the "no donations at all" empty state.
 New `ClaimedDonationDashboard`, opened immediately after an NGO claims a
 donation (from both the quick-claim dialog and the full Donation Details
 screen), and reachable again anytime from My Claims. Contains:
-- **Location** — the existing map placeholder (never presented as live).
+- **Location** — an interactive Google Map using saved pickup coordinates.
 - **Restaurant Information** — name, address, contact, rating/reviews,
   each falling back to "Not provided yet" / "No reviews yet" instead of
   any invented value.

@@ -1340,18 +1340,19 @@ class AppState extends ChangeNotifier {
         }
         _openNotificationsFromTap();
       };
-      FirebaseMessaging.instance.onTokenRefresh.listen((token) {
-        if (token.isNotEmpty) {
+      PushNotifications.listenForTokenRefresh(
+        onToken: (token) {
           registerFcmTokenWithBackend(token, PushNotifications.platform)
               .ignore();
-        }
-      }, onError: (Object error) {
-        debugPrint(
-            'FCM token refresh stream failed error_type=${error.runtimeType}');
-      });
+        },
+        onError: (Object error) {
+          debugPrint(
+              'FCM token refresh stream failed error_type=${error.runtimeType}');
+        },
+      );
       // A foreground push is not shown by the system, so render it ourselves on
       // the audible channel and record it in the in-app list.
-      FirebaseMessaging.onMessage.listen((message) {
+      PushNotifications.listenForForegroundMessages(onMessage: (message) {
         PushNotifications.showForeground(message);
         final content = notificationTapContent(message);
         pushNotification(
@@ -2955,45 +2956,6 @@ class MatchScoreCard extends StatelessWidget {
                   color: strong ? c.bluePrimary : c.textPrimary)),
           Text(label, style: TextStyle(fontSize: 9.5, color: c.textSecondary)),
         ]),
-      ),
-    );
-  }
-}
-
-/// A clearly-labeled map placeholder — never presented as a live map.
-class MapPlaceholder extends StatelessWidget {
-  final double height;
-  const MapPlaceholder({super.key, this.height = 160});
-
-  @override
-  Widget build(BuildContext context) {
-    final c = AppColors.of(context);
-    return Container(
-      height: height,
-      width: double.infinity,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(AppRadius.card),
-        border: Border.all(color: c.border),
-        color: c.surfaceAlt,
-      ),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Icon(Icons.map_outlined,
-              size: 40, color: c.textSecondary.withOpacity(0.5)),
-          Positioned(
-            bottom: 10,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                  color: c.surface,
-                  borderRadius: BorderRadius.circular(AppRadius.chip),
-                  border: Border.all(color: c.border)),
-              child: Text('Map preview — Google Maps integration pending',
-                  style: TextStyle(fontSize: 10.5, color: c.textSecondary)),
-            ),
-          ),
-        ],
       ),
     );
   }

@@ -16,21 +16,18 @@ from app import firebase_auth, supabase_client
 logger = logging.getLogger("sahaay.fcm")
 
 DEVICE_TOKENS_TABLE = "user_device_tokens"
-ANDROID_CHANNEL_ID = "sahaay_notifications"
+ANDROID_CHANNEL_ID = "sahaay_notifications_v2"
+ANDROID_NOTIFICATION_SOUND = "sahaay_ting_ting"
 _SAFE_FCM_ERROR_CODE = re.compile(r"(?:messaging/)?[a-z0-9_-]{1,64}\Z")
 
 
 def _device_tokens(client, user_id: str) -> list[dict]:
-    try:
-        rows = (
-            client.table(DEVICE_TOKENS_TABLE)
-            .select("token,platform")
-            .eq("user_id", str(user_id))
-            .execute()
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("FCM token lookup failed error_type=%s", type(exc).__name__)
-        return []
+    rows = (
+        client.table(DEVICE_TOKENS_TABLE)
+        .select("token,platform")
+        .eq("user_id", str(user_id))
+        .execute()
+    )
     return getattr(rows, "data", None) or []
 
 
@@ -48,8 +45,8 @@ def _android_config() -> "firebase_messaging.AndroidConfig":
         priority="high",
         notification=firebase_messaging.AndroidNotification(
             channel_id=ANDROID_CHANNEL_ID,
-            sound="default",
-            default_sound=True,
+            sound=ANDROID_NOTIFICATION_SOUND,
+            default_sound=False,
             priority="high",
             default_vibrate_timings=True,
         ),
@@ -70,8 +67,8 @@ def send_push_notification_to_user(
     body: str,
     data: dict | None = None,
 ) -> dict:
-    """Push to every device registered to ``user_id``; never raise."""
-    result = {"sent": 0, "failed": 0, "invalid": 0}
+    """Push to registered devices; acceptance by FCM does not confirm receipt."""
+    result = {"accepted_by_fcm": 0, "failed": 0, "invalid": 0}
     if not user_id:
         return result
 
@@ -84,14 +81,23 @@ def send_push_notification_to_user(
             type(exc).__name__,
         )
         return result
+    tokens = [
+        row
+        for row in tokens
+        if isinstance(row, dict)
+        and isinstance(row.get("token"), str)
+        and row["token"].strip()
+    ]
+    logger.info("FCM send attempted recipient_count=%d", len(tokens))
     if not tokens:
-        logger.info("FCM push skipped: no registered device tokens")
+        logger.info("FCM push skipped reason=no_registered_device_tokens")
         return result
 
     try:
         app = firebase_auth.get_firebase_app()
     except Exception as exc:  # noqa: BLE001
         logger.error("FCM initialization failed error_type=%s", type(exc).__name__)
+        result["failed"] = len(tokens)
         return result
 
     payload = {str(key): str(value) for key, value in (data or {}).items()}
@@ -108,7 +114,7 @@ def send_push_notification_to_user(
                 apns=_apns_config(),
             )
             firebase_messaging.send(message, app=app)
-            result["sent"] += 1
+            result["accepted_by_fcm"] += 1
         except firebase_messaging.UnregisteredError:
             result["invalid"] += 1
             _prune_token(client, token)
@@ -127,8 +133,8 @@ def send_push_notification_to_user(
                 safe_code,
             )
     logger.info(
-        "FCM send result sent=%d failed=%d invalid=%d",
-        result["sent"],
+        "FCM send result accepted_by_fcm=%d failed=%d invalid=%d",
+        result["accepted_by_fcm"],
         result["failed"],
         result["invalid"],
     )
@@ -142,7 +148,7 @@ def send_notification_to_ngo(
     data: dict | None = None,
 ) -> dict:
     """Resolve an NGO's associated user server-side before sending a push."""
-    empty_result = {"sent": 0, "failed": 0, "invalid": 0}
+    empty_result = {"accepted_by_fcm": 0, "failed": 0, "invalid": 0}
     try:
         result = (
             supabase_client.get_supabase_client()

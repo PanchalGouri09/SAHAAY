@@ -244,7 +244,60 @@ def test_sender_skips_firebase_initialization_when_user_has_no_tokens(monkeypatc
         "user-without-device", "Title", "Body"
     )
 
-    assert result == {"sent": 0, "failed": 0, "invalid": 0}
+    assert result == {"accepted_by_fcm": 0, "failed": 0, "invalid": 0}
+
+
+def test_sender_builds_audible_fcm_message_and_logs_acceptance_privately(
+    monkeypatch, caplog
+):
+    import logging
+
+    database = _SenderDatabase()
+    messages = []
+    monkeypatch.setattr("app.firebase_auth.get_firebase_app", lambda: object())
+    monkeypatch.setattr("app.supabase_client.get_supabase_client", lambda: database)
+    monkeypatch.setattr(
+        fcm_sender.firebase_messaging,
+        "send",
+        lambda message, **_kwargs: messages.append(message) or "fcm-message-id",
+    )
+    caplog.set_level(logging.INFO, logger="sahaay.fcm")
+
+    result = fcm_sender.send_push_notification_to_user(
+        "user-a", "Pickup update", "A delivery needs attention.", {"type": "pickup"}
+    )
+
+    assert result == {"accepted_by_fcm": 1, "failed": 0, "invalid": 0}
+    assert len(messages) == 1
+    assert messages[0].android.notification.channel_id == "sahaay_notifications_v2"
+    assert messages[0].android.notification.sound == "sahaay_ting_ting"
+    assert messages[0].data == {"type": "pickup"}
+    assert "recipient_count=1" in caplog.text
+    assert "accepted_by_fcm=1" in caplog.text
+    assert "fcm-message-id" not in caplog.text
+    assert "invalid-token" not in caplog.text
+
+
+def test_sender_logs_firebase_initialization_failure_without_sensitive_data(
+    monkeypatch, caplog
+):
+    import logging
+
+    database = _SenderDatabase()
+    monkeypatch.setattr("app.supabase_client.get_supabase_client", lambda: database)
+    monkeypatch.setattr(
+        "app.firebase_auth.get_firebase_app",
+        lambda: (_ for _ in ()).throw(RuntimeError("private credential data")),
+    )
+    caplog.set_level(logging.ERROR, logger="sahaay.fcm")
+
+    result = fcm_sender.send_push_notification_to_user("user-a", "Title", "Body")
+
+    assert result == {"accepted_by_fcm": 0, "failed": 1, "invalid": 0}
+    assert "FCM initialization failed" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "private credential data" not in caplog.text
+    assert "invalid-token" not in caplog.text
 
 
 def test_sender_isolates_transient_fcm_failure_without_logging_token(
@@ -298,10 +351,11 @@ def test_ngo_push_recipient_is_resolved_from_ngo_relationship(monkeypatch):
     monkeypatch.setattr(
         fcm_sender,
         "send_push_notification_to_user",
-        lambda user_id, *_args, **_kwargs: sent.append(user_id) or {"sent": 1},
+        lambda user_id, *_args, **_kwargs: sent.append(user_id)
+        or {"accepted_by_fcm": 1},
     )
 
     result = fcm_sender.send_notification_to_ngo("ngo-row-7", "title", "body")
 
-    assert result == {"sent": 1}
+    assert result == {"accepted_by_fcm": 1}
     assert sent == ["user-row-9"]

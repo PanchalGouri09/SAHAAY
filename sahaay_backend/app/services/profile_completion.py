@@ -202,9 +202,7 @@ def contact_verification_state(profile: dict, firebase_user: dict) -> dict:
     """Derive contact verification only from claims in a verified Firebase token."""
     from app.config import get_settings
 
-    phone_number = normalize_indian_mobile_number(
-        firebase_user.get("phone_number")
-    )
+    phone_number = normalize_indian_mobile_number(firebase_user.get("phone_number"))
     role = profile.get("role")
     role_row = _first_row(profile.get(f"{role}s") or profile.get(role))
     stored_phone = normalize_indian_mobile_number(
@@ -226,14 +224,12 @@ def contact_verification_state(profile: dict, firebase_user: dict) -> dict:
 def require_verified_contacts(
     profile: dict, firebase_user: dict, *, action: str
 ) -> None:
-    """Require trusted Firebase email and linked-phone verification for writes."""
+    """Require trusted Firebase email and a linked phone claim for writes."""
     state = contact_verification_state(profile, firebase_user)
     missing = []
     if not state["email_verified"]:
         missing.append("verified email matching your SAHAAY account")
-    if not state["phone_auth_configured"]:
-        missing.append("phone verification enabled for the SAHAAY Firebase project")
-    elif not state["phone_verified"]:
+    if not state["phone_verified"]:
         missing.append("phone verified and linked to your Firebase account")
     if missing:
         raise HTTPException(
@@ -245,9 +241,7 @@ def require_verified_contacts(
         )
 
 
-def require_verified_email(
-    profile: dict, firebase_user: dict, *, action: str
-) -> None:
+def require_verified_email(profile: dict, firebase_user: dict, *, action: str) -> None:
     """Require the verified Firebase email to match the SAHAAY account."""
     if not _email_is_verified(profile, firebase_user):
         raise HTTPException(

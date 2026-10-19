@@ -41,7 +41,8 @@ class SahaayMapPoint {
       latitude >= -90 &&
       latitude <= 90 &&
       longitude >= -180 &&
-      longitude <= 180;
+      longitude <= 180 &&
+      (latitude != 0 || longitude != 0);
 }
 
 /// SAHAAY's Google Map card.
@@ -303,20 +304,29 @@ class _SahaayGoogleMapState extends State<SahaayGoogleMap> {
                     .withValues(alpha: 0.92),
                 child: Center(
                   child: Padding(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(8),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.map_outlined),
-                        const SizedBox(height: 8),
+                        const Icon(Icons.map_outlined, size: 20),
+                        const SizedBox(height: 4),
                         const Text(
-                          'Map could not be initialized. Check your connection and retry.',
+                          'Google Maps unavailable. Check internet and Maps SDK/API-key access.',
                           textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 12),
                         ),
                         TextButton.icon(
                           onPressed: _retryMap,
                           icon: const Icon(Icons.refresh),
                           label: const Text('Retry map'),
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            minimumSize: const Size(0, 36),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                          ),
                         ),
                       ],
                     ),
@@ -360,7 +370,7 @@ class _SahaayGoogleMapState extends State<SahaayGoogleMap> {
     ]);
     if (points.length < 2) return;
     // Fitting bounds needs a laid-out map, so it runs one frame later; every
-    // failure is swallowed because the markers themselves are already placed.
+    // failure is best-effort because the markers are already placed.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       try {

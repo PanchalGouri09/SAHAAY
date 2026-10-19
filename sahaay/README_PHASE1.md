@@ -69,16 +69,22 @@ Do this when you're ready to move off demo mode:
 2. You'll pass these via `--dart-define-from-file=env.json` (see below).
 3. `supabase_service.dart` (built in Phase 9) will use these.
 
-### Google Maps
-- Android: add your key to
-  `android/app/src/main/AndroidManifest.xml` inside `<application>`:
-  ```xml
-  <meta-data android:name="com.google.android.geo.API_KEY" android:value="YOUR_KEY"/>
-  ```
-- iOS: add to `ios/Runner/AppDelegate.swift`:
-  ```swift
-  GMSServices.provideAPIKey("YOUR_KEY")
-  ```
+### Google Maps (Android)
+- Enable **Maps SDK for Android** and **Places API** in the Google Cloud
+  project used by this app.
+- Set `MAPS_API_KEY` in the ignored `android/secrets.properties` file. The
+  Secrets Gradle Plugin injects it into the Android manifest at build time.
+  Never paste the key into Dart, a committed manifest, or logs.
+- Restrict the key to this app's Android package and signing-certificate SHA-1.
+  Verify both debug and release signing identities if both build types are used.
+- On a connected Android device, open a donation with saved pickup and NGO
+  coordinates. Confirm that the map tiles render, the two markers follow their
+  distinct saved locations, and pan/zoom work. Using a dedicated test key,
+  simulate missing/unauthorized Maps configuration, confirm the map error and
+  Retry action, then restore valid configuration and retry.
+
+The app's map widget does not invent coordinates. Missing or invalid saved
+coordinates show a location-unavailable state instead of a map.
 - Also add location permission strings (needed now, for the
   "Use Current Location" buttons already built in Phase 1):
   - **Android** `android/app/src/main/AndroidManifest.xml`:
