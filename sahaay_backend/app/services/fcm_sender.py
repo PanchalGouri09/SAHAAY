@@ -29,9 +29,7 @@ def _device_tokens(client, user_id: str) -> list[dict]:
             .execute()
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "FCM token lookup failed error_type=%s", type(exc).__name__
-        )
+        logger.warning("FCM token lookup failed error_type=%s", type(exc).__name__)
         return []
     return getattr(rows, "data", None) or []
 
@@ -93,9 +91,7 @@ def send_push_notification_to_user(
     try:
         app = firebase_auth.get_firebase_app()
     except Exception as exc:  # noqa: BLE001
-        logger.error(
-            "FCM initialization failed error_type=%s", type(exc).__name__
-        )
+        logger.error("FCM initialization failed error_type=%s", type(exc).__name__)
         return result
 
     payload = {str(key): str(value) for key, value in (data or {}).items()}
@@ -157,7 +153,10 @@ def send_notification_to_ngo(
             .execute()
         )
     except Exception as exc:  # noqa: BLE001
-        logger.info("Could not resolve NGO push recipient: %s", exc)
+        logger.info(
+            "Could not resolve NGO push recipient error_type=%s",
+            type(exc).__name__,
+        )
         return empty_result
 
     row = getattr(result, "data", None)

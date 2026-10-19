@@ -22,6 +22,57 @@ try {
     throw "Flutter config file is not valid JSON: $configPath"
 }
 
+$googleServicesPath = Join-Path $appRoot "android\app\google-services.json"
+$androidGradlePath = Join-Path $appRoot "android\app\build.gradle.kts"
+if (-not (Test-Path -LiteralPath $googleServicesPath -PathType Leaf)) {
+    throw "Android Firebase configuration is missing: $googleServicesPath"
+}
+try {
+    $googleServices = Get-Content -LiteralPath $googleServicesPath -Raw | ConvertFrom-Json
+} catch {
+    throw "Android Firebase configuration is not valid JSON: $googleServicesPath"
+}
+$applicationIdMatch = [regex]::Match(
+    (Get-Content -LiteralPath $androidGradlePath -Raw),
+    'applicationId\s*=\s*"([^"]+)"'
+)
+if (-not $applicationIdMatch.Success) {
+    throw "Could not determine the Android application ID from $androidGradlePath."
+}
+$applicationId = $applicationIdMatch.Groups[1].Value
+$androidClients = @(
+    $googleServices.client |
+        Where-Object {
+            $_.client_info.android_client_info.package_name -eq $applicationId
+        }
+)
+if ($androidClients.Count -ne 1) {
+    throw "Android Firebase configuration must contain exactly one matching application client."
+}
+$webOAuthClients = @(
+    $androidClients[0].oauth_client |
+        Where-Object { $_.client_type -eq 3 }
+)
+if (
+    $webOAuthClients.Count -ne 1 -or
+    $webOAuthClients[0].client_id -notmatch '^[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$'
+) {
+    throw "Android Firebase configuration must contain exactly one valid Web OAuth client."
+}
+$googleServerClientId = $webOAuthClients[0].client_id
+$androidOAuthClients = @(
+    $androidClients[0].oauth_client |
+        Where-Object {
+            $_.client_type -eq 1 -and
+            $_.android_info.package_name -eq $applicationId
+        }
+)
+$firebaseOptionsPath = Join-Path $appRoot "lib\firebase_options.dart"
+$firebaseOptions = Get-Content -LiteralPath $firebaseOptionsPath -Raw
+if (-not $firebaseOptions.Contains($googleServices.project_info.project_id)) {
+    throw "Android Firebase project does not match lib\firebase_options.dart."
+}
+
 $apiBaseUrl = $config.API_BASE_URL
 if ($apiBaseUrl -isnot [string] -or [string]::IsNullOrWhiteSpace($apiBaseUrl)) {
     throw "API_BASE_URL is missing from $configPath."
@@ -142,7 +193,9 @@ try {
         throw "Packaged release manifest cleartext policy does not match API_BASE_URL scheme."
     }
 
-    & $FlutterExecutable build apk --release "--dart-define-from-file=$resolvedConfigPath"
+    & $FlutterExecutable build apk --release `
+        "--dart-define-from-file=$resolvedConfigPath" `
+        "--dart-define=GOOGLE_SERVER_CLIENT_ID=$googleServerClientId"
     $buildExitCode = $LASTEXITCODE
 } finally {
     Pop-Location
@@ -165,11 +218,6 @@ if (-not (Test-Path -LiteralPath $apkPath -PathType Leaf)) {
     throw "Flutter reported success but the release APK is missing: $apkPath"
 }
 
-$apk = Get-Item -LiteralPath $apkPath
-if ($apk.Length -le 0) {
-    throw "Flutter created an empty release APK: $apkPath"
-}
-
 $localPropertiesPath = Join-Path $appRoot "android\local.properties"
 $sdkLine = Get-Content -LiteralPath $localPropertiesPath |
     Where-Object { $_ -match "^sdk\.dir=" } |
@@ -182,6 +230,42 @@ $androidSdk = if ($sdkLine) {
 if ([string]::IsNullOrWhiteSpace($androidSdk)) {
     throw "Android SDK path was not found in android\local.properties or ANDROID_HOME."
 }
+
+$apksigner = Get-ChildItem -LiteralPath (Join-Path $androidSdk "build-tools") -Directory |
+    Sort-Object { [version]$_.Name } -Descending |
+    ForEach-Object { Join-Path $_.FullName "apksigner.bat" } |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+    Select-Object -First 1
+if (-not $apksigner) {
+    throw "Android apksigner was not found in the configured SDK."
+}
+$signingOutput = & $apksigner verify --print-certs $apkPath 2>$null
+$signerSha1Line = $signingOutput |
+    Select-String -Pattern "Signer #1 certificate SHA-1 digest: ([A-Fa-f0-9: ]+)" |
+    Select-Object -First 1
+if (-not $signerSha1Line) {
+    throw "Could not verify the APK signing certificate SHA-1."
+}
+$signerSha1 = [regex]::Match(
+    $signerSha1Line.Line,
+    "Signer #1 certificate SHA-1 digest: ([A-Fa-f0-9: ]+)"
+).Groups[1].Value -replace "[: ]", ""
+$configuredCertificateHashes = @(
+    $androidOAuthClients |
+        ForEach-Object { $_.android_info.certificate_hash -replace "[: ]", "" }
+)
+if (
+    $configuredCertificateHashes.Count -eq 0 -or
+    $configuredCertificateHashes -notcontains $signerSha1
+) {
+    throw "APK signing certificate is not registered for this Android OAuth client in google-services.json."
+}
+
+$apk = Get-Item -LiteralPath $apkPath
+if ($apk.Length -le 0) {
+    throw "Flutter created an empty release APK: $apkPath"
+}
+
 $aapt = Get-ChildItem -LiteralPath (Join-Path $androidSdk "build-tools") -Directory |
     Sort-Object { [version]$_.Name } -Descending |
     ForEach-Object { Join-Path $_.FullName "aapt.exe" } |

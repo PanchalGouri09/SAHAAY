@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -11,6 +12,28 @@ from app.supabase_client import get_supabase_client
 
 router = APIRouter(prefix="/deliveries", tags=["deliveries"])
 logger = logging.getLogger(__name__)
+
+
+def _is_open_delivery_row(delivery: dict) -> bool:
+    donation = delivery.get("donation")
+    if not isinstance(donation, dict):
+        return False
+    if donation.get("status") in {"expired", "cancelled", "completed", "delivered"}:
+        return False
+    now = datetime.now(timezone.utc)
+    for field in ("expiry_time", "pickup_deadline"):
+        value = donation.get(field)
+        if not value:
+            return False
+        try:
+            deadline = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+        if deadline <= now:
+            return False
+    return True
 
 
 def _enrich_delivery_rows(client, deliveries: list[dict]) -> list[dict]:
@@ -270,6 +293,7 @@ def list_transport_required(
         return []
 
     enriched = _enrich_delivery_rows(client, tasks)
+    enriched = [task for task in enriched if _is_open_delivery_row(task)]
     return [
         {
             **task,
@@ -333,6 +357,20 @@ def accept_delivery(
         )
 
     _reject_if_claim_not_live(client, existing.data)
+    donation = (
+        client.table("donations")
+        .select("id,status,expiry_time,pickup_deadline")
+        .eq("id", str(existing.data.get("donation_id")))
+        .maybe_single()
+        .execute()
+    )
+    if not getattr(donation, "data", None) or not _is_open_delivery_row(
+        {"donation": donation.data}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="This delivery is expired or no longer open for acceptance.",
+        )
 
     coordination_schema_available = True
     try:
@@ -472,12 +510,97 @@ def update_delivery(
         raise HTTPException(status_code=404, detail="Volunteer profile not found.")
     volunteer_id = volunteer[0]["id"] if isinstance(volunteer, list) else volunteer["id"]
     client = get_supabase_client()
-    existing = client.table("deliveries").select("id").eq("id", delivery_id).eq("volunteer_id", volunteer_id).maybe_single().execute()
-    if existing is None:
+    existing = (
+        client.table("deliveries")
+        .select("id,claim_id,donation_id,status")
+        .eq("id", delivery_id)
+        .eq("volunteer_id", volunteer_id)
+        .maybe_single()
+        .execute()
+    )
+    existing_row = getattr(existing, "data", None)
+    if not existing_row:
         raise HTTPException(status_code=404, detail="Delivery not found.")
     values = payload.model_dump(exclude_none=True)
-    response = client.table("deliveries").update(values).eq("id", delivery_id).eq("volunteer_id", volunteer_id).select().execute()
+    current_status = str(existing_row.get("status") or "")
+    requested_status = values.get("status")
+    if requested_status == current_status:
+        return existing_row
+    if current_status in {"delivered", "failed", "cancelled"}:
+        raise HTTPException(
+            status_code=409,
+            detail="This delivery is already closed and cannot be reopened.",
+        )
+    progress_order = {
+        "assigned": 0,
+        "accepted": 0,
+        "picked_up": 1,
+        "in_transit": 2,
+        "delivered": 3,
+    }
+    if (
+        requested_status in progress_order
+        and current_status in progress_order
+        and progress_order[requested_status] < progress_order[current_status]
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Delivery progress cannot move backwards.",
+        )
+    donation = (
+        client.table("donations")
+        .select("id,status,expiry_time,pickup_deadline")
+        .eq("id", str(existing_row.get("donation_id")))
+        .maybe_single()
+        .execute()
+    )
+    if not getattr(donation, "data", None) or not _is_open_delivery_row(
+        {"donation": donation.data}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="This delivery is expired or no longer open for updates.",
+        )
+    if values.get("status") == "delivered":
+        claim = (
+            client.table("claims")
+            .select("id,status,handover_verified_at")
+            .eq("id", str(existing_row.get("claim_id")))
+            .maybe_single()
+            .execute()
+        )
+        claim_row = getattr(claim, "data", None)
+        if not claim_row or not claim_row.get("handover_verified_at"):
+            raise HTTPException(
+                status_code=409,
+                detail="The provider-generated handover code must be verified before delivery completion.",
+            )
+    response = (
+        client.table("deliveries")
+        .update(values)
+        .eq("id", delivery_id)
+        .eq("volunteer_id", volunteer_id)
+        .eq("status", current_status)
+        .select()
+        .execute()
+    )
     if not response.data:
+        latest = (
+            client.table("deliveries")
+            .select("id,claim_id,donation_id,status")
+            .eq("id", delivery_id)
+            .eq("volunteer_id", volunteer_id)
+            .maybe_single()
+            .execute()
+        )
+        latest_row = getattr(latest, "data", None)
+        if latest_row and latest_row.get("status") == requested_status:
+            return latest_row
+        if latest_row:
+            raise HTTPException(
+                status_code=409,
+                detail="Delivery progress changed. Refresh before trying again.",
+            )
         raise HTTPException(status_code=404, detail="Delivery not found.")
     delivery = response.data[0]
     if values.get("status") == "delivered":

@@ -294,7 +294,8 @@ def _seed_full(ctx, *, status="completed", unit="kg", with_volunteer=True) -> No
             "unit": unit,
             "servings": 40,
             "prepared_at": "2026-09-29T12:00:00+00:00",
-            "expiry_time": "2026-09-30T18:00:00+00:00",
+            "expiry_time": "2030-09-30T18:00:00+00:00",
+            "pickup_deadline": "2030-09-30T13:00:00+00:00",
             "status": status,
         },
     ])
@@ -583,8 +584,19 @@ def test_another_provider_cannot_download(ctx) -> None:
     assert response.status_code == 403
 
 
-def test_volunteer_role_cannot_download(ctx) -> None:
+def test_assigned_volunteer_can_download_its_acknowledgment(ctx) -> None:
     _seed_full(ctx)
+    _login_volunteer()
+
+    response = client_session.get("/api/v1/donations/don-1/acknowledgment")
+
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF-1.4")
+
+
+def test_unassigned_volunteer_cannot_download_acknowledgment(ctx) -> None:
+    _seed_full(ctx)
+    ctx.fake.rows("deliveries")[0]["volunteer_id"] = None
     _login_volunteer()
 
     response = client_session.get("/api/v1/donations/don-1/acknowledgment")

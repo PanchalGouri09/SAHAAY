@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform, kIsWeb;
+    show TargetPlatform, defaultTargetPlatform, debugPrint, kIsWeb;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'notification_copy.dart';
@@ -70,8 +70,9 @@ class PushNotifications {
           enableVibration: true,
         ),
       );
-    } catch (_) {
-      // Push is best-effort; the app must still run without it.
+    } catch (error) {
+      debugPrint(
+          'Local notification initialization failed error_type=${error.runtimeType}');
     }
   }
 
@@ -87,7 +88,9 @@ class PushNotifications {
       );
       return settings.authorizationStatus == AuthorizationStatus.authorized ||
           settings.authorizationStatus == AuthorizationStatus.provisional;
-    } catch (_) {
+    } catch (error) {
+      debugPrint(
+          'Notification permission request failed error_type=${error.runtimeType}');
       return false;
     }
   }
@@ -108,8 +111,9 @@ class PushNotifications {
           DateTime.now().millisecondsSinceEpoch.remainder(1 << 31);
       await _plugin.show(id, copy.title, copy.body, _foregroundDetails,
           payload: jsonEncode(message.data));
-    } catch (_) {
-      // A failed render must never crash the foreground message handler.
+    } catch (error) {
+      debugPrint(
+          'Foreground notification display failed error_type=${error.runtimeType}');
     }
   }
 

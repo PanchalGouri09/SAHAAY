@@ -195,9 +195,7 @@ class _SenderQuery:
         return self
 
     def execute(self):
-        matched = [
-            row for row in self.database.rows if row.get(self.key) == self.value
-        ]
+        matched = [row for row in self.database.rows if row.get(self.key) == self.value]
         if self.deleting:
             self.database.rows[:] = [
                 row for row in self.database.rows if row not in matched
@@ -231,6 +229,22 @@ def test_sender_cleans_unregistered_token_and_does_not_raise(monkeypatch):
 
     assert result["invalid"] == 1
     assert database.rows == []
+
+
+def test_sender_skips_firebase_initialization_when_user_has_no_tokens(monkeypatch):
+    database = _SenderDatabase()
+    database.rows.clear()
+    monkeypatch.setattr("app.supabase_client.get_supabase_client", lambda: database)
+    monkeypatch.setattr(
+        "app.firebase_auth.get_firebase_app",
+        lambda: (_ for _ in ()).throw(AssertionError("must not initialize")),
+    )
+
+    result = fcm_sender.send_push_notification_to_user(
+        "user-without-device", "Title", "Body"
+    )
+
+    assert result == {"sent": 0, "failed": 0, "invalid": 0}
 
 
 def test_sender_isolates_transient_fcm_failure_without_logging_token(

@@ -217,6 +217,13 @@ def _caller_ngo_id(profile: dict) -> str | None:
     return (row or {}).get("id")
 
 
+def _caller_volunteer_id(profile: dict) -> str | None:
+    """The authenticated volunteer profile id, or None for other roles."""
+    volunteers = profile.get("volunteers")
+    row = volunteers[0] if isinstance(volunteers, list) and volunteers else volunteers
+    return (row or {}).get("id")
+
+
 def _ngo_claimed(client, donation_id, ngo_id) -> bool:
     """True only when this NGO really has a claim row on this donation."""
     try:
@@ -236,9 +243,8 @@ def _ngo_claimed(client, donation_id, ngo_id) -> bool:
 def _load_authorized_donation(client, donation_id: str, profile: dict) -> dict:
     """Loads a donation the caller is really a party to.
 
-    Allowed: the owning provider, or the NGO that actually claimed it. Everyone
-    else (another provider, an NGO with no claim, a volunteer) gets 403, and an
-    unknown donation gets 404 — so a receipt can never leak across accounts.
+    Allowed: the owning provider, the claiming NGO, or a volunteer actually
+    assigned to this donation. Other accounts receive 403.
     """
     if not donation_id:
         raise HTTPException(status_code=422, detail="donation_id is required.")
@@ -258,6 +264,18 @@ def _load_authorized_donation(client, donation_id: str, profile: dict) -> dict:
     ngo_id = _caller_ngo_id(profile)
     if ngo_id and _ngo_claimed(client, donation_id, ngo_id):
         return donation
+    volunteer_id = _caller_volunteer_id(profile)
+    if volunteer_id:
+        assigned = (
+            client.table("deliveries")
+            .select("id")
+            .eq("donation_id", str(donation_id))
+            .eq("volunteer_id", str(volunteer_id))
+            .maybe_single()
+            .execute()
+        )
+        if getattr(assigned, "data", None):
+            return donation
     raise HTTPException(
         status_code=403, detail="You are not a party to this donation."
     )

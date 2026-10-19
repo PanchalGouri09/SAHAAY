@@ -44,19 +44,26 @@ logger = logging.getLogger("sahaay.notifications")
 
 _UNSAFE_COPY_PATTERNS = (
     re.compile(r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", re.IGNORECASE),
-    re.compile(r"\b(?:don|ngo|claim|offer|user|prov|delivery|vol|notif)-[a-z0-9_-]+\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:don|ngo|claim|offer|user|prov|delivery|vol|notif)-[a-z0-9_-]+\b",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"\b(?:donation|ngo|claim|offer|user|provider|delivery|notification)"
         r"\s+(?:id|uuid)\s*[:=#]?\s*[a-z0-9_-]+\b",
         re.IGNORECASE,
     ),
-    re.compile(r"\b(?:id|identifier|uuid|token)\s*[:=#]\s*[a-z0-9_-]+\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:id|identifier|uuid|token)\s*[:=#]\s*[a-z0-9_-]+\b", re.IGNORECASE
+    ),
     re.compile(r"\b\d{12,}\b"),
     re.compile(r"\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}(?:\.[a-zA-Z0-9_-]+)?\b"),
     re.compile(r"\b[a-zA-Z0-9_-]{32,}\b"),
     re.compile(r"[\[\]{}]"),
     re.compile(r"\b[a-zA-Z_]*(?:Error|Exception)\b"),
-    re.compile(r"\b(?:request|correlation|trace|log)\s*(?:id|identifier)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:request|correlation|trace|log)\s*(?:id|identifier)\b", re.IGNORECASE
+    ),
     re.compile(
         r"\b(traceback|exception|apierror|postgrest|sqlstate|stack trace|"
         r"internal server error|debug|supabase|firebase|http\s*[45]\d\d)\b",
@@ -97,9 +104,7 @@ def donation_notification_copy(
     """Return concise, recipient-appropriate copy for donation offer events."""
     food = _safe_notification_copy(food_name or "", "", max_length=100)
     named_food = f" {food}" if food else ""
-    organization = _safe_notification_copy(
-        organization_name or "", "", max_length=100
-    )
+    organization = _safe_notification_copy(organization_name or "", "", max_length=100)
 
     if event == "ngo_offer":
         title = "A food donation is available"
@@ -346,10 +351,9 @@ def notify(
         row = rows[0] if rows else None
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "Failed to persist notification for user %s (%s): %s",
-            user_id,
-            notif_type,
-            exc,
+            "Failed to persist notification type=%s error_type=%s",
+            notif_type or "info",
+            type(exc).__name__,
         )
         # Without a durable row there is nothing for the app to render or mark
         # read, so the push is deliberately skipped rather than sending an
@@ -437,27 +441,26 @@ def donation_created(client, *, donation: dict, provider_row: dict | None) -> No
         food_name = donation.get("food_name") or "a donation"
         quantity = donation.get("quantity")
         unit = donation.get("unit") or ""
-        provider_name = (provider_row or {}).get("organization_name") or "A food provider"
-        rows = (
-            client.table("ngos")
-            .select("*")
-            .eq("city", city)
-            .execute()
-        )
+        provider_name = (provider_row or {}).get(
+            "organization_name"
+        ) or "A food provider"
+        rows = client.table("ngos").select("*").eq("city", city).execute()
         targets = getattr(rows, "data", None) or []
         user_ids = list(
-            dict.fromkeys(
-                str(ngo["user_id"]) for ngo in targets if ngo.get("user_id")
-            )
+            dict.fromkeys(str(ngo["user_id"]) for ngo in targets if ngo.get("user_id"))
         )
         user_rows = (
-            client.table("users")
-            .select("id,role,full_name,email,phone")
-            .in_("id", user_ids)
-            .execute()
-            .data
-            or []
-        ) if user_ids else []
+            (
+                client.table("users")
+                .select("id,role,full_name,email,phone")
+                .in_("id", user_ids)
+                .execute()
+                .data
+                or []
+            )
+            if user_ids
+            else []
+        )
         users_by_id = {str(user["id"]): user for user in user_rows}
         for ngo in targets:
             if not ngo_profile_is_complete(
@@ -625,7 +628,9 @@ def transport_responsibility_confirmed(
             data={"screen": "donation_detail"},
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("transport_responsibility_confirmed notification failed: %s", exc)
+        logger.warning(
+            "transport_responsibility_confirmed notification failed: %s", exc
+        )
 
 
 def transport_volunteer_search_started(
@@ -649,7 +654,9 @@ def transport_volunteer_search_started(
             data={"screen": "donation_detail"},
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("transport_volunteer_search_started notification failed: %s", exc)
+        logger.warning(
+            "transport_volunteer_search_started notification failed: %s", exc
+        )
 
 
 _PROVIDER_CLAIM_MESSAGES = {
@@ -800,9 +807,7 @@ def volunteer_transport_assigned(
         if claim:
             recipients.append(user_id_for_ngo(client, claim.get("ngo_id")))
         if donation:
-            recipients.append(
-                user_id_for_provider(client, donation.get("provider_id"))
-            )
+            recipients.append(user_id_for_provider(client, donation.get("provider_id")))
         notify_many(
             client,
             recipients,
@@ -812,7 +817,8 @@ def volunteer_transport_assigned(
                 f"{food_name} from the provider to the NGO."
             ),
             notif_type="volunteer_assigned",
-            related_donation_id=(donation or {}).get("id") or delivery.get("donation_id"),
+            related_donation_id=(donation or {}).get("id")
+            or delivery.get("donation_id"),
             data={"screen": "deliveries"},
         )
     except Exception as exc:  # noqa: BLE001
@@ -876,9 +882,7 @@ def delivery_status_changed(
         if claim:
             recipients.append(user_id_for_ngo(client, claim.get("ngo_id")))
         if new_status in {"delivered", "failed", "cancelled"} and donation:
-            recipients.append(
-                user_id_for_provider(client, donation.get("provider_id"))
-            )
+            recipients.append(user_id_for_provider(client, donation.get("provider_id")))
         message = message_tmpl.format(food=food_name)
         if new_status in {"failed", "cancelled"} and failure_reason:
             detail = _safe_notification_copy(failure_reason, "", max_length=240)
@@ -890,16 +894,15 @@ def delivery_status_changed(
             title=title_tmpl.format(food=food_name),
             message=message,
             notif_type=notif_type,
-            related_donation_id=(donation or {}).get("id") or delivery.get("donation_id"),
+            related_donation_id=(donation or {}).get("id")
+            or delivery.get("donation_id"),
             data={"screen": "deliveries"},
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("delivery_status_changed notification failed: %s", exc)
 
 
-def handover_verified(
-    client, *, donation: dict | None, claim: dict | None
-) -> None:
+def handover_verified(client, *, donation: dict | None, claim: dict | None) -> None:
     """Notify both authorized participants after the persisted handover succeeds."""
     try:
         donation = donation or _donation_by_id(client, (claim or {}).get("donation_id"))
@@ -935,7 +938,8 @@ def handover_completed(client, *, donation: dict | None, claim: dict | None) -> 
             recipients.append(ngo_user)
         for user_id in recipients:
             notify(
-                client, user_id,
+                client,
+                user_id,
                 title=f"Donation completed: {food}",
                 message="The handover code was verified. The receipt is still being prepared; check donation history shortly.",
                 notif_type="handover_completed",
@@ -946,9 +950,7 @@ def handover_completed(client, *, donation: dict | None, claim: dict | None) -> 
         logger.warning("handover_completed notification failed: %s", exc)
 
 
-def ngo_demo_verification_changed(
-    client, *, ngo: dict, verified: bool
-) -> None:
+def ngo_demo_verification_changed(client, *, ngo: dict, verified: bool) -> None:
     """Notify an NGO only after its matching-eligibility status actually changes."""
     try:
         user_id = ngo.get("user_id") or user_id_for_ngo(client, ngo.get("id"))
@@ -987,9 +989,7 @@ def contact_phone_updated(
     try:
         normalized_old = normalize_phone_for_notification(previous_phone)
         title = (
-            "Phone number added"
-            if normalized_old is None
-            else "Phone number updated"
+            "Phone number added" if normalized_old is None else "Phone number updated"
         )
         notify(
             client,
@@ -1016,15 +1016,19 @@ def normalize_phone_for_notification(value: str | None) -> str | None:
 
 
 def acknowledgment_ready(
-    client, *, donation: dict | None, provider_user_id: str | None = None,
+    client,
+    *,
+    donation: dict | None,
+    provider_user_id: str | None = None,
     claim: dict | None = None,
 ) -> None:
     """A persisted completion receipt is ready for both real participants."""
     try:
         donation = donation or {}
-        recipients = [provider_user_id or user_id_for_provider(
-            client, donation.get("provider_id")
-        )]
+        recipients = [
+            provider_user_id
+            or user_id_for_provider(client, donation.get("provider_id"))
+        ]
         claim = claim or {}
         ngo_user_id = user_id_for_ngo(client, claim.get("ngo_id"))
         if ngo_user_id and ngo_user_id not in recipients:

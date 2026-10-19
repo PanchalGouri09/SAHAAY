@@ -500,7 +500,9 @@ void main() {
       expect(find.textContaining('donating surplus food'), findsOneWidget);
       expect(find.textContaining('Discover and claim'), findsOneWidget);
       expect(
-          find.textContaining('Optionally help deliver food'), findsOneWidget);
+        find.text('Help deliver food from providers to nearby NGOs.'),
+        findsOneWidget,
+      );
     });
   });
 

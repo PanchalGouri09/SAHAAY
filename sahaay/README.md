@@ -66,3 +66,11 @@ The Maps/Places key is supplied separately through
 Cloud and never commit the local properties file. The current Android release
 variant uses the debug signing configuration and is for demo/testing, not
 production distribution.
+
+The release build script reads the matching Web OAuth client ID from
+`android\app\google-services.json` and passes it explicitly to Google
+Sign-In as the server client ID needed for Firebase ID-token requests. It also
+checks that this Firebase configuration contains an Android OAuth client for
+the APK signing certificate. If using a Play-distributed signing certificate,
+register that certificate's SHA-1 in Firebase/Google Cloud and regenerate
+`google-services.json` before building.

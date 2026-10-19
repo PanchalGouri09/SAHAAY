@@ -7,6 +7,32 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'api_service.dart';
 import 'profile_completion.dart';
 
+const googleServerClientId = String.fromEnvironment('GOOGLE_SERVER_CLIENT_ID');
+
+GoogleSignIn createSahaayGoogleSignIn({String? serverClientId}) {
+  final configuredServerClientId = serverClientId ?? googleServerClientId;
+  return GoogleSignIn(
+    serverClientId:
+        configuredServerClientId.isEmpty ? null : configuredServerClientId,
+  );
+}
+
+AuthCredential createFirebaseGoogleCredential({
+  required String? idToken,
+  required String? accessToken,
+}) {
+  if (idToken == null || idToken.isEmpty) {
+    throw const AuthException(
+      'Google did not provide a sign-in token. Check the app Google '
+      'configuration and try again.',
+    );
+  }
+  return GoogleAuthProvider.credential(
+    accessToken: accessToken,
+    idToken: idToken,
+  );
+}
+
 typedef PhoneCodeSentCallback = void Function(
     String verificationId, int? resendToken);
 typedef PhoneVerifiedCallback = void Function(String phoneNumber);
@@ -69,7 +95,7 @@ class FirebaseAuthService {
       Duration googleSignInTimeout = const Duration(seconds: 60)})
       : _auth = auth ?? FirebaseAuth.instance,
         _api = api ?? ApiService(auth: auth ?? FirebaseAuth.instance),
-        _googleSignIn = googleSignIn ?? GoogleSignIn(),
+        _googleSignIn = googleSignIn ?? createSahaayGoogleSignIn(),
         _googleSignInTimeout = googleSignInTimeout;
 
   ApiService get api => _api;
@@ -159,6 +185,12 @@ class FirebaseAuthService {
   /// Identity is always re-derrived server-side from the verified Firebase
   /// token; no firebase_uid is ever sent from the client.
   Future<AuthProfile?> signInWithGoogle() async {
+    if (_googleSignIn.serverClientId?.isNotEmpty != true) {
+      throw const AuthException(
+        'Google sign-in is not configured for this build. Rebuild using the '
+        'Sahaay release build script.',
+      );
+    }
     var stage = 'account chooser';
     try {
       // Force the account chooser on EVERY tap. google_sign_in silently reuses
@@ -170,18 +202,20 @@ class FirebaseAuthService {
       await _googleSignIn.signOut().timeout(_googleSignInTimeout);
       final googleUser =
           await _googleSignIn.signIn().timeout(_googleSignInTimeout);
-      if (googleUser == null) return null; // user cancelled the picker
+      if (googleUser == null) {
+        debugPrint('Google sign-in cancelled stage=account chooser');
+        return null;
+      }
       stage = 'Google token retrieval';
       final googleAuth =
           await googleUser.authentication.timeout(_googleSignInTimeout);
-      if (googleAuth.idToken == null || googleAuth.idToken!.isEmpty) {
-        throw const AuthException(
-          'Google did not provide a sign-in token. Check the app Google '
-          'configuration and try again.',
-        );
-      }
+      debugPrint(
+        'Google token acquisition id_token_present='
+        '${googleAuth.idToken?.isNotEmpty == true} '
+        'access_token_present=${googleAuth.accessToken?.isNotEmpty == true}',
+      );
       stage = 'Firebase credential exchange';
-      final credential = GoogleAuthProvider.credential(
+      final credential = createFirebaseGoogleCredential(
         accessToken: googleAuth.accessToken,
         idToken: googleAuth.idToken,
       );

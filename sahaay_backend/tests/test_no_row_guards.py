@@ -466,8 +466,21 @@ def test_delivery_found_row_updates_status(supabase) -> None:
     supabase.table("users").insert(
         {"id": "user-1", "role": "volunteer", "volunteers": [{"id": "vol-1"}]}
     )
+    supabase.table("donations").insert(
+        {
+            "id": "donation-1",
+            "status": "claimed",
+            "expiry_time": "2030-01-01T20:00:00Z",
+            "pickup_deadline": "2030-01-01T13:00:00Z",
+        }
+    )
     supabase.table("deliveries").insert(
-        {"id": "delivery-1", "volunteer_id": "vol-1", "status": "assigned"}
+        {
+            "id": "delivery-1",
+            "donation_id": "donation-1",
+            "volunteer_id": "vol-1",
+            "status": "assigned",
+        }
     )
 
     response = client.patch(

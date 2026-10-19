@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:firebase_core_platform_interface/firebase_core_platform_interface.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
@@ -38,7 +39,8 @@ class _FakeFirebaseCorePlatform extends FirebasePlatform {
 /// from `signIn` reproduces the user cancelling the chooser, so the flow stops
 /// right after the chooser is shown - no Firebase or backend call happens.
 class _RecordingGoogleSignIn extends GoogleSignIn {
-  _RecordingGoogleSignIn({this.signOutError, this.signOutFuture});
+  _RecordingGoogleSignIn({this.signOutError, this.signOutFuture})
+      : super(serverClientId: 'test-server.apps.googleusercontent.com');
 
   final Object? signOutError;
   final Future<GoogleSignInAccount?>? signOutFuture;
@@ -75,6 +77,41 @@ void main() {
     expect(result, isNull); // cancelled at the chooser
     expect(google.calls, <String>['signOut', 'signIn'],
         reason: 'signOut() must precede signIn() to force the account chooser');
+  });
+
+  test('production Google Sign-In is initialized with the Web OAuth client',
+      () {
+    const webOAuthClient = 'test-server.apps.googleusercontent.com';
+    expect(
+      createSahaayGoogleSignIn(serverClientId: webOAuthClient).serverClientId,
+      webOAuthClient,
+    );
+  });
+
+  test('Google ID token is passed into a Firebase Google credential', () {
+    final credential = createFirebaseGoogleCredential(
+      idToken: 'test-id-token',
+      accessToken: 'test-access-token',
+    );
+
+    expect(credential.providerId, GoogleAuthProvider.PROVIDER_ID);
+  });
+
+  test('missing Google ID token is rejected even when access token exists', () {
+    expect(
+      () => createFirebaseGoogleCredential(
+        idToken: null,
+        accessToken: 'test-access-token',
+      ),
+      throwsA(
+        isA<AuthException>().having(
+          (error) => error.message,
+          'message',
+          'Google did not provide a sign-in token. Check the app Google '
+              'configuration and try again.',
+        ),
+      ),
+    );
   });
 
   test('Google picker failures produce a safe retryable message', () async {
