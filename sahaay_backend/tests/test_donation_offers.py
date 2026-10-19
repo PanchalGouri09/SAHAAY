@@ -1067,9 +1067,11 @@ def test_provider_get_returns_refresh_error_when_no_saved_candidates(monkeypatch
 
 
 def test_provider_and_ngo_reads_share_the_persisted_score_and_distance(monkeypatch):
+    now = datetime.now(timezone.utc)
     donation = {
         "id": "donation-1",
         "status": "available",
+        "expiry_time": (now + timedelta(hours=1)).isoformat(),
         "food_name": "Cooked rice",
         "provider_id": "provider-1",
         "quantity": 5,
@@ -1094,7 +1096,7 @@ def test_provider_and_ngo_reads_share_the_persisted_score_and_distance(monkeypat
         "ngo_id": "ngo-1",
         "candidate_rank": 1,
         "status": "pending",
-        "offer_expires_at": "2026-10-16T01:05:00+00:00",
+        "offer_expires_at": (now + timedelta(minutes=5)).isoformat(),
     }
     client = _ReadClient(
         {
@@ -1398,9 +1400,12 @@ def test_provider_match_route_returns_saved_ranking_without_recalculating(monkey
 def test_ngo_offer_list_serializes_coordinate_distance_when_saved_score_is_missing(
     monkeypatch,
 ):
+    future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
     donation = {
         "id": "donation-1",
         "provider_id": "provider-1",
+        "status": "available",
+        "expiry_time": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
         "latitude": 18.52,
         "longitude": 73.85,
     }
@@ -1413,6 +1418,7 @@ def test_ngo_offer_list_serializes_coordinate_distance_when_saved_score_is_missi
                     "ngo_id": "ngo-1",
                     "candidate_rank": 1,
                     "status": "pending",
+                    "offer_expires_at": future,
                 }
             ],
             "donations": [donation],
@@ -1449,6 +1455,129 @@ def test_ngo_offer_list_serializes_coordinate_distance_when_saved_score_is_missi
     details = offers_for_ngo[0]["ranked_candidate"]["score_details"]
     assert details["distance_km"] > 0
     assert details["distance_source"] == "straight_line"
+
+
+def test_ngo_active_offer_feed_excludes_terminal_expired_and_closed_rows(
+    monkeypatch,
+):
+    now = datetime.now(timezone.utc)
+    active_offer = {
+        "id": "offer-active",
+        "donation_id": "donation-active",
+        "ngo_id": "ngo-1",
+        "status": "pending",
+        "offer_expires_at": (now + timedelta(minutes=5)).isoformat(),
+    }
+    expired_offer = {
+        **active_offer,
+        "id": "offer-expired",
+        "donation_id": "donation-expired",
+        "offer_expires_at": (now - timedelta(seconds=1)).isoformat(),
+    }
+    accepted_offer = {
+        **active_offer,
+        "id": "offer-accepted",
+        "donation_id": "donation-accepted",
+        "status": "accepted",
+    }
+    withdrawn_offer = {
+        **active_offer,
+        "id": "offer-withdrawn",
+        "donation_id": "donation-withdrawn",
+        "status": "withdrawn",
+    }
+    claimed_offer = {
+        **active_offer,
+        "id": "offer-claimed",
+        "donation_id": "donation-claimed",
+    }
+    expired_donation_offer = {
+        **active_offer,
+        "id": "offer-expired-donation",
+        "donation_id": "donation-expired-donation",
+    }
+    client = _ReadClient(
+        {
+            "donation_offers": [
+                active_offer,
+                expired_offer,
+                accepted_offer,
+                withdrawn_offer,
+                claimed_offer,
+                expired_donation_offer,
+            ],
+            "donations": [
+                {
+                    "id": "donation-active",
+                    "status": "available",
+                    "expiry_time": (now + timedelta(hours=1)).isoformat(),
+                },
+                {
+                    "id": "donation-expired",
+                    "status": "available",
+                    "expiry_time": (now + timedelta(hours=1)).isoformat(),
+                },
+                {
+                    "id": "donation-accepted",
+                    "status": "available",
+                    "expiry_time": (now + timedelta(hours=1)).isoformat(),
+                },
+                {
+                    "id": "donation-claimed",
+                    "status": "claimed",
+                    "expiry_time": (now + timedelta(hours=1)).isoformat(),
+                },
+                {
+                    "id": "donation-expired-donation",
+                    "status": "available",
+                    "expiry_time": (now - timedelta(seconds=1)).isoformat(),
+                },
+            ],
+            "donation_match_candidates": [],
+        }
+    )
+    monkeypatch.setattr(donation_offers, "get_supabase_client", lambda: client)
+
+    result = donation_offers.list_ngo_offers({"ngos": [{"id": "ngo-1"}]})
+
+    assert [offer["id"] for offer in result] == ["offer-active"]
+    offer_query = next(
+        query for table, query in client.queries if table == "donation_offers"
+    )
+    assert ("eq", "status", "pending") in offer_query.filters
+    assert any(
+        item[:2] == ("gt", "offer_expires_at")
+        for item in offer_query.filters
+    )
+
+
+def test_ngo_active_offer_feed_excludes_offer_at_expiry_boundary(monkeypatch):
+    now = datetime.now(timezone.utc)
+    client = _ReadClient(
+        {
+            "donation_offers": [
+                {
+                    "id": "offer-boundary",
+                    "donation_id": "donation-1",
+                    "ngo_id": "ngo-1",
+                    "status": "pending",
+                    "offer_expires_at": now.isoformat(),
+                }
+            ],
+            "donations": [
+                {
+                    "id": "donation-1",
+                    "status": "available",
+                    "expiry_time": (now + timedelta(hours=1)).isoformat(),
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(donation_offers, "get_supabase_client", lambda: client)
+
+    result = donation_offers.list_ngo_offers({"ngos": [{"id": "ngo-1"}]})
+
+    assert result == []
 
 
 def test_saved_ranking_serializes_straight_line_distance_from_real_coordinates(
@@ -1869,13 +1998,20 @@ def test_provider_donation_list_includes_linked_surplus_prediction(monkeypatch):
 
 
 def test_ngo_list_is_scoped_to_authenticated_ngo_and_enriched(monkeypatch):
+    future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    donation = {
+        "id": "donation-1",
+        "food_name": "Rice",
+        "status": "available",
+        "expiry_time": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+    }
     offer = {
         "id": "offer-1",
         "donation_id": "donation-1",
         "ngo_id": "ngo-2",
         "status": "pending",
+        "offer_expires_at": future,
     }
-    donation = {"id": "donation-1", "food_name": "Rice"}
     candidate = {"donation_id": "donation-1", "ngo_id": "ngo-2", "match_rank": 2}
     client = _ReadClient(
         {

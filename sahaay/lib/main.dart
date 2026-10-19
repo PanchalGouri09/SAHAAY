@@ -9614,6 +9614,7 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
         _offersLoaded = true;
       });
     } on ApiException catch (e) {
+      debugPrint('NGO offers request failed http_status=${e.statusCode}');
       if (!mounted) return;
       setState(() {
         _offersError = _apiErrorMessage(e,
@@ -9622,7 +9623,8 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
         _offersLoaded = true;
       });
     } catch (error, stackTrace) {
-      debugPrint('Could not load NGO donation offers: $error\n$stackTrace');
+      debugPrint(
+          'Could not load NGO donation offers error_type=${error.runtimeType}');
       if (!mounted) return;
       setState(() {
         _offersError =
@@ -9635,13 +9637,13 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
 
   Future<void> _respondToNgoOffer(String offerId, String decision) async {
     if (_respondingOfferId != null) return;
-    if (decision == 'accepted' &&
-        !await _requireCompleteProfile(
-          context,
-          role: UserRole.ngo,
-          action: 'accepting a donation offer',
-        )) {
-      return;
+    if (decision == 'accepted') {
+      final complete = await _requireCompleteProfile(
+        context,
+        role: UserRole.ngo,
+        action: 'accepting a donation offer',
+      );
+      if (!mounted || !complete) return;
     }
     setState(() => _respondingOfferId = offerId);
     try {
@@ -9699,30 +9701,20 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
   }
 
   Future<void> _claim(Donation d) async {
-    if (!await _requireCompleteProfile(
+    final complete = await _requireCompleteProfile(
       context,
       role: UserRole.ngo,
       action: 'claiming a donation',
-    )) {
-      return;
-    }
+    );
+    if (!mounted || !complete) return;
     await context.read<AppState>().api.createClaim({
       'donation_id': d.id,
       'requested_quantity': d.quantityKg,
       'notes': null,
     });
     if (!mounted) return;
-    setState(() {
-      d.status = DonationStatus.claimed;
-      _claimed.add(d);
-    });
     await _loadClaims();
-    context.read<AppState>().pushNotification(
-          'Donation Claimed',
-          'You claimed "${d.foodName}"'
-              ' (${d.quantityKg.toStringAsFixed(0)} kg) from ${d.providerLabel}.',
-          NotificationCategory.donation,
-        );
+    await _loadNearby();
   }
 
   @override
@@ -10238,14 +10230,7 @@ class _NgoHomeTab extends StatelessWidget {
                             child: PrimaryButton(
                                 label: 'CLAIM',
                                 onPressed: () async {
-                                  if (await _claimDonation(context, d)) {
-                                    if (!context.mounted) return;
-                                    Navigator.of(context).push(
-                                        MaterialPageRoute(
-                                            builder: (_) =>
-                                                ClaimedDonationDashboard(
-                                                    donation: d)));
-                                  }
+                                  await _claimDonation(context, d);
                                 })),
                       ]),
                     ),
@@ -10257,10 +10242,9 @@ class _NgoHomeTab extends StatelessWidget {
     );
   }
 
-  /// Confirms with the user, performs the real backend claim, and only
-  /// reports success once the claim was actually created. Returns true when
-  /// the caller should proceed to the claimed-donation screen.
-  Future<bool> _claimDonation(BuildContext context, Donation d) async {
+  /// Confirms with the user and reports success only after the backend creates
+  /// the pending claim. A pending request is not a claimed donation.
+  Future<void> _claimDonation(BuildContext context, Donation d) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -10277,20 +10261,25 @@ class _NgoHomeTab extends StatelessWidget {
         ],
       ),
     );
-    if (confirmed != true || !context.mounted) return false;
+    if (confirmed != true || !context.mounted) return;
     try {
       await onClaim(d);
     } on ApiException catch (e) {
-      if (!context.mounted) return false;
+      if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
             backgroundColor: AppColors.of(context).danger,
             content: Text(_apiErrorMessage(e,
                 fallback: 'Could not claim this donation. Please try again.'))),
       );
-      return false;
+      return;
     }
-    return true;
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text(
+        'Claim request submitted. The donation will be marked claimed after acceptance.',
+      ),
+    ));
   }
 }
 
@@ -10677,9 +10666,12 @@ class DonationDetailScreen extends StatelessWidget {
                     return;
                   }
                   if (!context.mounted) return;
-                  Navigator.of(context).pushReplacement(MaterialPageRoute(
-                      builder: (_) =>
-                          ClaimedDonationDashboard(donation: donation)));
+                  Navigator.of(context).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text(
+                      'Claim request submitted. The donation will be marked claimed after acceptance.',
+                    ),
+                  ));
                 },
               )
             else

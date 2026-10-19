@@ -1,6 +1,7 @@
 """NGO response endpoints for server-generated, ranked donation offers."""
 
 import logging
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -23,6 +24,20 @@ donation_router = APIRouter(prefix="/donations", tags=["donation-offers"])
 
 class OfferResponse(BaseModel):
     decision: Literal["accepted", "declined"]
+
+
+def _read_ngo_offer_rows(query, *, stage: str) -> list[dict]:
+    try:
+        return query.execute().data or []
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "NGO offer database query failed stage=%s error_type=%s",
+            stage,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503, detail="Donation offers could not be loaded."
+        ) from None
 
 
 @donation_router.get("/{donation_id}/offers")
@@ -270,44 +285,66 @@ def check_provider_offer_escalation(
 
 @router.get("")
 def list_ngo_offers(profile: dict = Depends(require_role("ngo"))) -> list[dict]:
-    """List persisted offer history addressed to the authenticated NGO."""
+    """List currently active offers addressed to the authenticated NGO."""
     ngo = profile.get("ngos")
     ngo = ngo[0] if isinstance(ngo, list) else ngo
     if not ngo or not ngo.get("id"):
         raise HTTPException(status_code=404, detail="NGO profile not found.")
 
     client = get_supabase_client()
-    offers = (
+    now = datetime.now(timezone.utc)
+    offers = _read_ngo_offer_rows(
         client.table("donation_offers")
         .select("*")
         .eq("ngo_id", str(ngo["id"]))
+        .eq("status", "pending")
+        .gt("offer_expires_at", now.isoformat())
         .order("created_at", desc=True)
-        .limit(100)
-        .execute()
-        .data
-        or []
+        .limit(100),
+        stage="active_offers",
     )
     donation_ids = list(dict.fromkeys(str(row["donation_id"]) for row in offers))
     if not donation_ids:
+        logger.info("NGO active offer query returned offer_count=0")
         return []
 
-    donations = (
+    donations = _read_ngo_offer_rows(
         client.table("donations")
         .select("*")
-        .in_("id", donation_ids)
-        .execute()
-        .data
-        or []
+        .in_("id", donation_ids),
+        stage="donations",
     )
-    donation_by_id = {str(row["id"]): row for row in donations}
-    candidates = (
+    donation_by_id = {}
+    for row in donations:
+        expiry = row.get("expiry_time")
+        if row.get("status") != "available" or not isinstance(expiry, str):
+            continue
+        try:
+            donation_expiry = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if donation_expiry.tzinfo is None:
+            donation_expiry = donation_expiry.replace(tzinfo=timezone.utc)
+        if donation_expiry > now:
+            donation_by_id[str(row["id"])] = row
+    offers = [
+        offer
+        for offer in offers
+        if str(offer["donation_id"]) in donation_by_id
+    ]
+    if not offers:
+        logger.info(
+            "NGO active offers filtered to zero active_donation_count=%d",
+            len(donation_by_id),
+        )
+        return []
+
+    candidates = _read_ngo_offer_rows(
         client.table("donation_match_candidates")
         .select("*")
-        .in_("donation_id", donation_ids)
-        .eq("ngo_id", str(ngo["id"]))
-        .execute()
-        .data
-        or []
+        .in_("donation_id", list(donation_by_id))
+        .eq("ngo_id", str(ngo["id"])),
+        stage="ranked_candidates",
     )
     candidate_by_donation = {
         str(row["donation_id"]): row for row in candidates
@@ -319,13 +356,11 @@ def list_ngo_offers(profile: dict = Depends(require_role("ngo"))) -> list[dict]:
             if donation.get("provider_id")
         )
     )
-    provider_rows = (
+    provider_rows = _read_ngo_offer_rows(
         client.table("providers")
         .select("id,latitude,longitude")
-        .in_("id", provider_ids)
-        .execute()
-        .data
-        or []
+        .in_("id", provider_ids),
+        stage="provider_coordinates",
     ) if provider_ids else []
     provider_by_id = {str(row["id"]): row for row in provider_rows}
     result = []
@@ -355,6 +390,26 @@ def list_ngo_offers(profile: dict = Depends(require_role("ngo"))) -> list[dict]:
                 "ranked_candidate": candidate,
             }
         )
+    logger.info(
+        "NGO active offers serialized offer_count=%d ranked_data_count=%d "
+        "score_count=%d distance_count=%d",
+        len(result),
+        sum(offer.get("ranked_candidate") is not None for offer in result),
+        sum(
+            isinstance(offer.get("ranked_candidate"), dict)
+            and isinstance(offer["ranked_candidate"].get("final_score"), (int, float))
+            for offer in result
+        ),
+        sum(
+            isinstance(offer.get("ranked_candidate"), dict)
+            and isinstance(offer["ranked_candidate"].get("score_details"), dict)
+            and isinstance(
+                offer["ranked_candidate"]["score_details"].get("distance_km"),
+                (int, float),
+            )
+            for offer in result
+        ),
+    )
     return result
 
 

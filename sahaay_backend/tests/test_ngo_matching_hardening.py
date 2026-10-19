@@ -16,16 +16,19 @@ AI transport -> httpx.MockTransport running the real typed AIClient.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
 from app.dependencies import get_current_profile
 from app.main import app
+from app.routers import ai_features
 from app.schemas.ai import NGOScoreBreakdown
 from app.services.ai_client import AIClient, get_ai_client
 from app.services import donation_offers as offer_service
@@ -626,6 +629,33 @@ def test_profile_complete_ngo_is_candidate_without_any_legacy_flag(ctx) -> None:
     assert [item["ngo_id"] for item in matched.json()["ranked_ngos"]] == ["ngo-1"]
     assert "verified" not in ctx.fake.tables["ngos"][0]
     assert len(ctx.fake.tables["donation_match_candidates"]) == 1
+
+
+def test_candidate_query_failure_logs_stage_without_exception_message(caplog) -> None:
+    class FailedQuery:
+        def select(self, *_args):
+            return self
+
+        def execute(self):
+            raise RuntimeError("sensitive query response must not be logged")
+
+    class FailedClient:
+        def table(self, _name):
+            return FailedQuery()
+
+    with caplog.at_level(logging.ERROR, logger="sahaay.matching"):
+        with pytest.raises(HTTPException) as error:
+            ai_features._ngo_candidates(
+                FailedClient(),
+                pickup_time="12:00",
+                quantity_kg=1.0,
+                dietary_type="veg",
+                food_category="meals",
+            )
+
+    assert error.value.status_code == 503
+    assert "stage=ngo_profiles error_type=RuntimeError" in caplog.text
+    assert "sensitive query response" not in caplog.text
 
 
 def test_match_keeps_valid_zero_coordinates(ctx) -> None:

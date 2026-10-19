@@ -23,6 +23,7 @@ Honesty rules applied here (no invented data):
   deduped, and enriched with the real NGO rows — unknown IDs are never shown.
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 from re import compile as _re_compile
@@ -66,6 +67,7 @@ from app.services.profile_completion import (
 from app.supabase_client import get_supabase_client
 
 router = APIRouter(tags=["ai-features"])
+logger = logging.getLogger("sahaay.matching")
 
 _COMPLETED_DONATION_STATUSES = {"completed", "delivered"}
 _NGO_OPERATING_TIMEZONE = timezone(timedelta(hours=5, minutes=30), "Asia/Kolkata")
@@ -393,18 +395,36 @@ def _ngo_candidates(
     category preferences, or dietary preferences are excluded. People-served
     capacity and food categories are never treated as weight or dietary data.
     """
-    rows = client.table("ngos").select("*").execute().data or []
+    try:
+        rows = client.table("ngos").select("*").execute().data or []
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "NGO matching data query failed stage=ngo_profiles error_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503, detail="NGO matching data is temporarily unavailable."
+        ) from None
     user_ids = list(
         dict.fromkeys(str(row["user_id"]) for row in rows if row.get("user_id"))
     )
-    users = (
-        client.table("users")
-        .select("id,role,full_name,email,phone")
-        .in_("id", user_ids)
-        .execute()
-        .data
-        or []
-    ) if user_ids else []
+    try:
+        users = (
+            client.table("users")
+            .select("id,role,full_name,email,phone")
+            .in_("id", user_ids)
+            .execute()
+            .data
+            or []
+        ) if user_ids else []
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "NGO matching data query failed stage=ngo_users error_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503, detail="NGO matching data is temporarily unavailable."
+        ) from None
     users_by_id = {str(row["id"]): row for row in users}
     candidates: list[tuple[dict, NGOInput]] = []
     has_incomplete_profile = False
@@ -474,6 +494,13 @@ def _ngo_candidates(
                 ),
             )
         )
+    logger.info(
+        "NGO matching eligibility evaluated profile_count=%d eligible_count=%d "
+        "incomplete_profile_present=%s",
+        len(rows),
+        len(candidates),
+        has_incomplete_profile,
+    )
     return candidates, has_incomplete_profile, bool(rows)
 
 
@@ -681,6 +708,10 @@ def _calculate_ngos_match(
     try:
         result = ai_client.rank_ngos(request)
     except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "NGO matching AI ranking failed error_type=%s",
+            type(exc).__name__,
+        )
         _route_ai_failure(exc, fallback="NGO matching failed.")
 
     # Only trust rankings for NGOs we actually sent to the AI. Drop unknown
@@ -702,6 +733,11 @@ def _calculate_ngos_match(
         ranked_ngos.append(_enrich_ranked_ngo(item, candidate_by_id, provider_vehicle))
 
     if seen.intersection(candidate_by_id) != set(candidate_by_id):
+        logger.error(
+            "NGO matching AI ranking incomplete eligible_count=%d returned_count=%d",
+            len(candidate_by_id),
+            len(seen.intersection(candidate_by_id)),
+        )
         raise HTTPException(
             status_code=502,
             detail="The matching service returned an incomplete eligible-NGO ranking.",
@@ -861,6 +897,10 @@ def match_ngos(
             ranked_ngos=result.get("ranked_ngos") or [],
         )
     except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "NGO matching candidate persistence failed error_type=%s",
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=503,
             detail="Eligible NGOs were matched, but their ranked offers could not be saved.",

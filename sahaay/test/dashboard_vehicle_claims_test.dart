@@ -49,6 +49,7 @@ class _FakeApi extends ApiService {
   List<dynamic> claims = <dynamic>[];
   List<dynamic> providerClaims = <dynamic>[];
   List<dynamic> ngoOffers = <dynamic>[];
+  final List<Map<String, dynamic>> claimRequests = [];
   int ngoOfferReads = 0;
   final List<(String, String)> offerResponses = [];
   Map<String, dynamic> persistedDonationOffers = <String, dynamic>{};
@@ -127,6 +128,22 @@ class _FakeApi extends ApiService {
 
   @override
   Future<List<dynamic>> getClaims() async => claims;
+
+  @override
+  Future<Map<String, dynamic>> createClaim(Map<String, dynamic> payload) async {
+    claimRequests.add(Map<String, dynamic>.from(payload));
+    final donation = donations.firstWhere(
+      (row) => row is Map && row['id'] == payload['donation_id'],
+    );
+    final claim = {
+      'id': 'claim-created',
+      'donation_id': payload['donation_id'],
+      'status': 'pending',
+      'donation': Map<String, dynamic>.from(donation as Map),
+    };
+    claims = [...claims, claim];
+    return claim;
+  }
 
   @override
   Future<List<dynamic>> getDeliveries() async => <dynamic>[];
@@ -1339,6 +1356,42 @@ void main() {
       expect(find.text('1.6 km straight-line'), findsOneWidget);
       expect(find.textContaining('Complete Profile'), findsNothing);
       expect(find.textContaining('Edit Profile'), findsNothing);
+    });
+
+    group('NGO donation claims', () {
+      testWidgets('keeps a pending claim distinct from claimed donation state',
+          (tester) async {
+        final api = _FakeApi(profile: _completeNgoProfile(verified: true))
+          ..donations = [
+            {
+              'id': 'donation-open',
+              'food_name': 'Fresh vegetables',
+              'food_category': 'produce',
+              'quantity': 5,
+              'unit': 'kg',
+              'servings': 20,
+              'status': 'available',
+              'expiry_time': DateTime.now()
+                  .add(const Duration(hours: 2))
+                  .toIso8601String(),
+            },
+          ];
+        _tallScreen(tester);
+        await tester.pumpWidget(_appWithState(const NgoDashboardScreen(), api));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('CLAIM').first);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Confirm'));
+        await tester.pumpAndSettle();
+
+        expect(api.claimRequests, hasLength(1));
+        expect(api.claims.single['status'], 'pending');
+        expect(api.donations.single['status'], 'available');
+        expect(find.textContaining('Claim request submitted'), findsOneWidget);
+        expect(find.byType(ClaimedDonationDashboard), findsNothing);
+        expect(find.text('Available Donations'), findsOneWidget);
+      });
     });
 
     testWidgets('shows persisted score and accepts a live offer through API',

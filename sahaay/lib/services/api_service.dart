@@ -352,9 +352,13 @@ class ApiService {
   /// with its donation and persisted ranking. This is not a public feed.
   Future<List<dynamic>> getNgoDonationOffers() async {
     final response = await _request('GET', '/api/v1/donation-offers');
-    return response['data'] is List
-        ? response['data'] as List<dynamic>
-        : <dynamic>[];
+    final data = response['data'];
+    if (data is! List) {
+      throw const FormatException(
+        'Donation offers response must contain a data list.',
+      );
+    }
+    return data;
   }
 
   /// Records the signed-in NGO's decision for one of its persisted offers.
