@@ -431,39 +431,71 @@ class _SahaayGoogleMapState extends State<SahaayGoogleMap> {
   /// The same rounded, bordered card shell the placeholder used, so swapping
   /// placeholder → real map does not change the surrounding layout.
   Widget _locationUnavailable(AppColors c) {
-    return Container(
-      height: widget.height,
-      width: double.infinity,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(AppRadius.card),
-        border: Border.all(color: c.border),
-        color: c.surfaceAlt,
-      ),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Icon(
-            Icons.location_off_outlined,
-            size: 40,
-            color: c.textSecondary.withValues(alpha: 0.5),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 320 ||
+            MediaQuery.textScalerOf(context).scale(14) > 14;
+        return Container(
+          height: widget.height,
+          width: double.infinity,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppRadius.card),
+            border: Border.all(color: c.border),
+            color: c.surfaceAlt,
           ),
-          Positioned(
-            bottom: 10,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: c.surface,
-                borderRadius: BorderRadius.circular(AppRadius.chip),
-                border: Border.all(color: c.border),
+          child: Center(
+            child: Padding(
+              padding: EdgeInsets.all(
+                compact ? AppSpacing.sm : AppSpacing.md,
               ),
-              child: Text(
-                'Location unavailable — no coordinates for this item',
-                style: TextStyle(fontSize: 10.5, color: c.textSecondary),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 360),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: c.surface,
+                        borderRadius: BorderRadius.circular(AppRadius.button),
+                        border: Border.all(color: c.border),
+                      ),
+                      child: Icon(
+                        Icons.location_off_outlined,
+                        size: 24,
+                        color: c.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.md),
+                    Expanded(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Location unavailable',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: AppSpacing.xs),
+                          Text(
+                            'No coordinates are available for this item.',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 }

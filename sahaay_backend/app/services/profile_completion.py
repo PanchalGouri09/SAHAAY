@@ -224,12 +224,12 @@ def contact_verification_state(profile: dict, firebase_user: dict) -> dict:
 def require_verified_contacts(
     profile: dict, firebase_user: dict, *, action: str
 ) -> None:
-    """Require trusted Firebase email and a linked phone claim for writes."""
+    """Require verified email and, when configured, a linked phone claim."""
     state = contact_verification_state(profile, firebase_user)
     missing = []
     if not state["email_verified"]:
         missing.append("verified email matching your SAHAAY account")
-    if not state["phone_verified"]:
+    if state["phone_auth_configured"] and not state["phone_verified"]:
         missing.append("phone verified and linked to your Firebase account")
     if missing:
         raise HTTPException(

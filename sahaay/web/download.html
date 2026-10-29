@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0B4DA1">
+  <meta name="description" content="Download the SAHAAY Android app.">
+  <title>Download SAHAAY for Android</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      color: #17233b;
+      background: #f6f8fb;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      padding: 32px 16px;
+      display: grid;
+      place-items: center;
+    }
+
+    main {
+      width: min(100%, 560px);
+      padding: clamp(24px, 6vw, 44px);
+      border: 1px solid #d0d5dd;
+      border-radius: 20px;
+      background: #fff;
+      box-shadow: 0 16px 40px rgb(71 85 105 / 18%);
+      text-align: center;
+    }
+
+    .brand {
+      margin: 0 0 8px;
+      color: #0b4da1;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: .16em;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(28px, 7vw, 38px);
+      line-height: 1.15;
+    }
+
+    .summary {
+      margin: 12px auto 24px;
+      max-width: 38ch;
+      color: #5b6b85;
+      line-height: 1.55;
+    }
+
+    .qr {
+      display: block;
+      width: min(100%, 320px);
+      height: auto;
+      margin: 0 auto 12px;
+      padding: 12px;
+      border: 1px solid #d0d5dd;
+      border-radius: 12px;
+      background: #fff;
+    }
+
+    .caption {
+      margin: 0 0 24px;
+      color: #5b6b85;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .download {
+      display: inline-flex;
+      min-height: 52px;
+      align-items: center;
+      justify-content: center;
+      padding: 12px 22px;
+      border: 1px solid #0b4da1;
+      border-radius: 14px;
+      background: #0b4da1;
+      color: #fff;
+      font-size: 16px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .download:hover { background: #072b52; }
+    .download:focus-visible, .back:focus-visible {
+      outline: 3px solid #1698f0;
+      outline-offset: 3px;
+    }
+
+    .note {
+      margin: 14px auto 0;
+      color: #5b6b85;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .note a {
+      color: #0b4da1;
+      font-weight: 600;
+    }
+
+    .back {
+      display: inline-block;
+      margin-top: 24px;
+      color: #0b4da1;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="brand">SAHAAY</p>
+    <h1>Download for Android</h1>
+    <p class="summary">
+      Install SAHAAY to connect surplus food with the people and communities
+      who need it.
+    </p>
+    <img
+      class="qr"
+      src="assets/sahaay-download-qr.png"
+      width="320"
+      height="320"
+      alt="QR code linking directly to the SAHAAY Android APK download"
+    >
+    <p class="caption">Scan to download SAHAAY for Android</p>
+    <a
+      class="download"
+      href="https://github.com/PanchalGouri09/SAHAAY/releases/latest/download/SAHAAY.apk"
+    >Download SAHAAY APK</a>
+    <p class="note">
+      Android APK · Version 0.1.0. If the download does not start,
+      <a href="https://github.com/PanchalGouri09/SAHAAY/releases/latest/download/SAHAAY.apk">open the direct APK link</a>
+      or scan the QR code with your phone camera.
+    </p>
+    <a class="back" href="./">Return to SAHAAY</a>
+  </main>
+</body>
+</html>

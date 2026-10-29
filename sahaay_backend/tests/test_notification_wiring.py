@@ -479,7 +479,7 @@ class _FcmRecorder:
         if self.raise_error is not None:
             raise self.raise_error
         self.calls.append((user_id, title, body, data))
-        return {"sent": 1, "failed": 0, "invalid": 0}
+        return {"accepted_by_fcm": 1, "failed": 0, "invalid": 0}
 
 
 @pytest.fixture
@@ -560,6 +560,7 @@ def _matching_ngo(user_id: str, ngo_id: str, city: str = "Pune", **overrides):
 
 
 def test_donation_created_notifies_only_same_city_complete_ngos(fake, fcm) -> None:
+    fake.seed("providers", [{"id": "prov-1", "user_id": "u-provider"}])
     fake.seed(
         "ngos",
         [
@@ -579,17 +580,29 @@ def test_donation_created_notifies_only_same_city_complete_ngos(fake, fcm) -> No
     notification_service.donation_created(
         fake,
         donation=donation,
-        provider_row={"organization_name": "Tasty Kitchen", "city": "Pune"},
+        provider_row={
+            "id": "prov-1",
+            "organization_name": "Tasty Kitchen",
+            "city": "Pune",
+        },
     )
 
     rows = _notifications(fake)
-    assert {r["user_id"] for r in rows} == {"u-ngo-1", "u-ngo-2"}
+    assert {r["user_id"] for r in rows} == {
+        "u-provider",
+        "u-ngo-1",
+        "u-ngo-2",
+    }
     assert all(r["type"] == "new_nearby_donation" for r in rows)
     assert all(r["related_donation_id"] == "don-1" for r in rows)
     assert all(r["is_read"] is False for r in rows)
-    assert all("Vegetable Rice" in r["title"] for r in rows)
+    provider_row = next(r for r in rows if r["user_id"] == "u-provider")
+    assert provider_row["title"] == "Donation submitted"
+    assert "Vegetable Rice" in provider_row["message"]
+    ngo_rows = [r for r in rows if r["user_id"].startswith("u-ngo")]
+    assert all("Vegetable Rice" in r["title"] for r in ngo_rows)
     # FCM was pushed to exactly the persisted recipients.
-    assert {c[0] for c in fcm.calls} == {"u-ngo-1", "u-ngo-2"}
+    assert {c[0] for c in fcm.calls} == {"u-provider", "u-ngo-1", "u-ngo-2"}
     assert all(c[3]["type"] == "new_nearby_donation" for c in fcm.calls)
     assert all(c[3]["donation_id"] == "don-1" for c in fcm.calls)
 
@@ -648,6 +661,7 @@ def test_creating_a_donation_wires_the_donation_created_event(
             _matching_ngo("u-ngo-2", "ngo-2", city="Mumbai"),
         ],
     )
+    fake.seed("providers", [{"id": "prov-1", "user_id": "u-provider"}])
     app.dependency_overrides[get_current_profile] = lambda: {
         "id": "user-provider",
         "role": "provider",
@@ -711,9 +725,9 @@ def test_creating_a_donation_wires_the_donation_created_event(
     assert response.status_code in (200, 201), response.text
 
     rows = _notifications(fake)
-    assert {r["user_id"] for r in rows} == {"u-ngo-1"}
+    assert {r["user_id"] for r in rows} == {"u-provider", "u-ngo-1"}
     assert all(r["type"] == "new_nearby_donation" for r in rows)
-    assert {c[0] for c in fcm.calls} == {"u-ngo-1"}
+    assert {c[0] for c in fcm.calls} == {"u-provider", "u-ngo-1"}
 
 
 # ===========================================================================
@@ -1121,7 +1135,7 @@ def _login_volunteer():
     _login("volunteer", {"id": "vol-1"})
 
 
-def test_volunteer_acceptance_notifies_ngo_and_provider(fake, fcm) -> None:
+def test_volunteer_acceptance_notifies_all_three_real_participants(fake, fcm) -> None:
     _seed_delivery(fake, delivery_status="unassigned", donation_status="available")
     fake.rows("deliveries")[0]["volunteer_id"] = None
     fake.seed(
@@ -1140,9 +1154,13 @@ def test_volunteer_acceptance_notifies_ngo_and_provider(fake, fcm) -> None:
 
     assert response.status_code == 200, response.text
     rows = _notifications(fake)
-    assert {r["user_id"] for r in rows} == {"u-ngo", "u-provider"}
+    assert {r["user_id"] for r in rows} == {
+        "u-ngo",
+        "u-provider",
+        "u-volunteer",
+    }
     assert all(r["type"] == "volunteer_assigned" for r in rows)
-    assert {c[0] for c in fcm.calls} == {"u-ngo", "u-provider"}
+    assert {c[0] for c in fcm.calls} == {"u-ngo", "u-provider", "u-volunteer"}
 
 
 def test_later_yes_responder_is_told_first_transport_winner(fake, fcm) -> None:
@@ -1234,14 +1252,19 @@ def test_delivered_status_notifies_both_parties(fake, fcm) -> None:
 
     assert response.status_code == 200, response.text
     rows = [r for r in _notifications(fake) if r["type"] == "delivery_completed"]
-    assert {r["user_id"] for r in rows} == {"u-ngo", "u-provider"}
+    assert {r["user_id"] for r in rows} == {
+        "u-ngo",
+        "u-provider",
+        "u-volunteer",
+    }
     assert fake.rows("donations")[0]["status"] == "completed"  # trigger simulated
     repeated = client.patch(
         "/api/v1/deliveries/del-1/status", json={"status": "delivered"}
     )
     assert repeated.status_code == 200
     assert (
-        len([r for r in _notifications(fake) if r["type"] == "delivery_completed"]) == 2
+        len([r for r in _notifications(fake) if r["type"] == "delivery_completed"])
+        == 3
     )
     reopened = client.patch(
         "/api/v1/deliveries/del-1/status", json={"status": "accepted"}
@@ -1259,8 +1282,7 @@ def test_intermediate_pickup_notifies_only_the_claiming_ngo(fake, fcm) -> None:
 
     assert response.status_code == 200
     rows = _notifications(fake)
-    assert len(rows) == 1
-    assert rows[0]["user_id"] == "u-ngo"
+    assert {row["user_id"] for row in rows} == {"u-ngo", "u-volunteer"}
     assert rows[0]["type"] == "pickup_updated"
     assert "u-provider" not in {r["user_id"] for r in rows}
 
@@ -1303,7 +1325,11 @@ def test_failed_delivery_quotes_the_real_failure_reason(fake, fcm) -> None:
 
     assert response.status_code == 200
     rows = [r for r in _notifications(fake) if r["type"] == "delivery_failed"]
-    assert {r["user_id"] for r in rows} == {"u-ngo", "u-provider"}
+    assert {r["user_id"] for r in rows} == {
+        "u-ngo",
+        "u-provider",
+        "u-volunteer",
+    }
     assert all("Recipient unavailable" in r["message"] for r in rows)
 
 
@@ -1346,6 +1372,18 @@ def test_handover_verification_notifies_both_claim_participants(fake, fcm) -> No
             },
         ],
     )
+    fake.seed(
+        "deliveries",
+        [
+            {
+                "id": "del-1",
+                "claim_id": "claim-1",
+                "volunteer_id": "vol-1",
+                "status": "delivered",
+            }
+        ],
+    )
+    fake.seed("volunteers", [{"id": "vol-1", "user_id": "u-volunteer"}])
     _login("provider", {"id": "prov-1"})
 
     code_response = client.post("/api/v1/donations/don-1/handover/code")
@@ -1360,7 +1398,11 @@ def test_handover_verification_notifies_both_claim_participants(fake, fcm) -> No
 
     # Completion is relevant to both the provider and receiving NGO.
     verified = [r for r in rows if r["type"] == "handover_verified"]
-    assert {r["user_id"] for r in verified} == {"u-provider", "u-ngo"}
+    assert {r["user_id"] for r in verified} == {
+        "u-provider",
+        "u-ngo",
+        "u-volunteer",
+    }
     assert all(r["related_donation_id"] == "don-1" for r in verified)
 
     # In this scenario the receipt could not be persisted, so BOTH real
@@ -1368,7 +1410,11 @@ def test_handover_verification_notifies_both_claim_participants(fake, fcm) -> No
     # receipt is still being prepared (the previously-unwired
     # `handover_completed` event).
     completed = [r for r in rows if r["type"] == "handover_completed"]
-    assert {r["user_id"] for r in completed} == {"u-provider", "u-ngo"}
+    assert {r["user_id"] for r in completed} == {
+        "u-provider",
+        "u-ngo",
+        "u-volunteer",
+    }
     assert all("receipt is still being prepared" in r["message"] for r in completed)
 
 
@@ -1408,7 +1454,8 @@ def test_fcm_failure_never_breaks_a_delivery_update(fake, fcm) -> None:
 
     assert response.status_code == 200, response.text
     assert (
-        len([r for r in _notifications(fake) if r["type"] == "delivery_completed"]) == 2
+        len([r for r in _notifications(fake) if r["type"] == "delivery_completed"])
+        == 3
     )
 
 
@@ -1511,6 +1558,28 @@ def test_identical_event_is_only_persisted_once(fake, fcm) -> None:
     assert len(_notifications(fake)) == 1
     # The suppressed duplicate is also suppressed as a push (one push total).
     assert len(fcm.calls) == 1
+
+
+def test_notification_dispatch_logs_persist_and_fcm_outcomes(
+    fake, fcm, caplog
+) -> None:
+    with caplog.at_level("INFO", logger="sahaay.notifications"):
+        row = notification_service.notify(
+            fake,
+            "u-ngo",
+            title="Delivery assigned",
+            message="A volunteer accepted a transport task.",
+            notif_type="volunteer_assigned",
+            related_donation_id="don-1",
+        )
+
+    assert row is not None
+    assert "stage=persist outcome=success event_type=volunteer_assigned" in caplog.text
+    assert (
+        "stage=fcm outcome=completed event_type=volunteer_assigned "
+        "accepted_by_fcm=1 failed=0 invalid=0"
+    ) in caplog.text
+    assert "sent=0" not in caplog.text
 
 
 @pytest.mark.parametrize(

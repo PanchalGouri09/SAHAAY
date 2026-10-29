@@ -460,9 +460,14 @@ def test_backend_claim_path_rejects_incomplete_ngo():
 
 
 def test_contact_verification_uses_only_signed_firebase_claims(monkeypatch):
+    settings = {"phone_auth_enabled": False}
     monkeypatch.setattr(
         "app.config.get_settings",
-        lambda: type("Settings", (), {"firebase_phone_auth_enabled": False})(),
+        lambda: type(
+            "Settings",
+            (),
+            {"firebase_phone_auth_enabled": settings["phone_auth_enabled"]},
+        )(),
     )
     profile = _provider()
     valid = {
@@ -484,11 +489,35 @@ def test_contact_verification_uses_only_signed_firebase_claims(monkeypatch):
         "phone_number": None,
     }
     assert contact_verification_state(profile, untrusted)["phone_verified"] is False
+    require_verified_contacts(profile, untrusted, action="creating a donation")
+
+    settings["phone_auth_enabled"] = True
     with pytest.raises(HTTPException) as error:
         require_verified_contacts(profile, untrusted, action="creating a donation")
     assert error.value.status_code == 403
     assert "phone verified" in error.value.detail
-    assert "phone verification enabled" not in error.value.detail
+
+
+def test_disabled_phone_gate_still_requires_verified_email(monkeypatch):
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: type("Settings", (), {"firebase_phone_auth_enabled": False})(),
+    )
+    profile = _provider()
+    firebase_user = {
+        "email": profile["email"],
+        "email_verified": False,
+        "phone_number": None,
+    }
+
+    with pytest.raises(HTTPException) as error:
+        require_verified_contacts(
+            profile, firebase_user, action="accepting a volunteer task"
+        )
+
+    assert error.value.status_code == 403
+    assert "verified email" in error.value.detail
+    assert "phone verified" not in error.value.detail
 
 
 def test_claim_api_accepts_authenticated_complete_ngo_without_phone_auth(

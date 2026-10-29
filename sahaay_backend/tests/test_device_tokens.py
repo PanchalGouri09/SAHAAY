@@ -272,7 +272,8 @@ def test_sender_builds_audible_fcm_message_and_logs_acceptance_privately(
     assert messages[0].android.notification.channel_id == "sahaay_notifications_v2"
     assert messages[0].android.notification.sound == "sahaay_ting_ting"
     assert messages[0].data == {"type": "pickup"}
-    assert "recipient_count=1" in caplog.text
+    assert "device_count=1" in caplog.text
+    assert "event_type=pickup" in caplog.text
     assert "accepted_by_fcm=1" in caplog.text
     assert "fcm-message-id" not in caplog.text
     assert "invalid-token" not in caplog.text
@@ -294,7 +295,7 @@ def test_sender_logs_firebase_initialization_failure_without_sensitive_data(
     result = fcm_sender.send_push_notification_to_user("user-a", "Title", "Body")
 
     assert result == {"accepted_by_fcm": 0, "failed": 1, "invalid": 0}
-    assert "FCM initialization failed" in caplog.text
+    assert "stage=initialize outcome=failed event_type=unknown" in caplog.text
     assert "RuntimeError" in caplog.text
     assert "private credential data" not in caplog.text
     assert "invalid-token" not in caplog.text

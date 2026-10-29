@@ -104,12 +104,20 @@ class FirebaseAuthService {
 
   String? get currentFirebaseUserId => _auth.currentUser?.uid;
 
+  String? get currentFirebasePhoneNumber => _auth.currentUser?.phoneNumber;
+
   Stream<AuthProfile?> get authStateChanges =>
       _auth.authStateChanges().asyncMap(_profileForUser);
 
   Future<AuthProfile?> get currentProfile => _profileForUser(_auth.currentUser);
 
-  Future<String?> getIdToken() async => await _auth.currentUser?.getIdToken();
+  Future<String?> getIdToken({bool forceRefresh = false}) async {
+    try {
+      return await _auth.currentUser?.getIdToken(forceRefresh);
+    } on FirebaseAuthException catch (error) {
+      throw AuthException(_messageFor(error));
+    }
+  }
 
   Future<AuthProfile> signIn(
       {required String email, required String password}) async {
@@ -452,6 +460,7 @@ class FirebaseAuthService {
         throw const AuthException(
             'Firebase returned a different account after phone verification.');
       }
+      await updatedUser.getIdToken(true);
       return updatedUser;
     } on FirebaseAuthException catch (error) {
       if (error.code == 'provider-already-linked') {

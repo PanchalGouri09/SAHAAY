@@ -80,6 +80,7 @@ void main() {
 
       expect(phone, '+919876543210');
       expect(user.linkCalls, 1);
+      expect(user.forceRefreshTokenCalls, 1);
       expect(auth.currentUser?.uid, 'account-a');
     });
 
@@ -155,6 +156,7 @@ class _PhoneUser implements User {
   @override
   String? phoneNumber;
   int linkCalls = 0;
+  int forceRefreshTokenCalls = 0;
   Future<UserCredential> Function(AuthCredential)? onLink;
 
   @override
@@ -168,6 +170,12 @@ class _PhoneUser implements User {
 
   @override
   Future<void> reload() async {}
+
+  @override
+  Future<String?> getIdToken([bool forceRefresh = false]) async {
+    if (forceRefresh) forceRefreshTokenCalls++;
+    return 'test-token';
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);

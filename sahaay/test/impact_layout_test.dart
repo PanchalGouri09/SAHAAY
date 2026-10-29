@@ -29,8 +29,8 @@ void main() {
       MaterialApp(
         home: Builder(
           builder: (context) => MediaQuery(
-            data:
-                MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(textScale)),
+            data: MediaQuery.of(context)
+                .copyWith(textScaler: TextScaler.linear(textScale)),
             child: const Scaffold(
               body: SingleChildScrollView(
                 child: Padding(
@@ -93,5 +93,142 @@ void main() {
     final iconCenter = tester.getCenter(find.byIcon(Icons.assignment_outlined));
     final screenCenter = tester.getCenter(find.byType(Scaffold));
     expect((iconCenter.dx - screenCenter.dx).abs(), lessThan(1.0));
+  });
+
+  testWidgets('EmptyState supports a clear detail and actionable retry',
+      (tester) async {
+    var retries = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: sahaayLightTheme,
+        home: Scaffold(
+          body: Center(
+            child: EmptyState(
+              icon: Icons.cloud_off_outlined,
+              message: 'Could not load notifications.',
+              description: 'Check your connection and try again.',
+              actionLabel: 'Retry',
+              onAction: () => retries++,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Could not load notifications.'), findsOneWidget);
+    expect(find.text('Check your connection and try again.'), findsOneWidget);
+    await tester.tap(find.text('Retry'));
+    expect(retries, 1);
+  });
+
+  testWidgets(
+      'NotificationTile remains readable at narrow width and larger text',
+      (tester) async {
+    final semantics = tester.ensureSemantics();
+    tester.view.physicalSize = const Size(320, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const title = 'A volunteer has accepted your food delivery request';
+    const body =
+        'Your donation is moving to the receiving organization. Check the delivery details for the latest status and pickup information.';
+    final item = AppNotificationItem(
+      title: title,
+      body: body,
+      time: 'Today, 10:45 AM',
+      category: NotificationCategory.volunteer,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: sahaayLightTheme,
+        home: MediaQuery(
+          data: const MediaQueryData(textScaler: TextScaler.linear(1.4)),
+          child: Scaffold(
+            body: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [NotificationTile(item: item)],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text(title), findsOneWidget);
+    expect(find.text(body), findsOneWidget);
+    expect(find.bySemanticsLabel('Unread'), findsOneWidget);
+    expect(tester.getRect(find.byType(NotificationTile)).right,
+        lessThanOrEqualTo(320));
+    semantics.dispose();
+  });
+
+  testWidgets('role selection scrolls instead of overflowing on small screens',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 560);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: sahaayLightTheme,
+        home: const MediaQuery(
+          data: MediaQueryData(textScaler: TextScaler.linear(1.4)),
+          child: RoleSelectionScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(RoleCard), findsNWidgets(3));
+  });
+
+  testWidgets('DonationCard keeps long food names readable on narrow screens',
+      (tester) async {
+    tester.view.physicalSize = const Size(320, 720);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    const foodName =
+        'Freshly prepared seasonal vegetable and lentil lunch boxes';
+    final donation = Donation(
+      id: 'donation-ui-test',
+      foodName: foodName,
+      category: 'Cooked Meals',
+      quantityKg: 12,
+      quantity: 12,
+      quantityUnit: 'kg',
+      servings: 24,
+      providerName: 'Community Kitchen',
+      distanceKm: null,
+      expiryLabel: 'Pickup by 6:30 PM today',
+      freshness: 'Freshly prepared',
+      status: DonationStatus.available,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: sahaayLightTheme,
+        home: MediaQuery(
+          data: const MediaQueryData(textScaler: TextScaler.linear(1.4)),
+          child: Scaffold(
+            body: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: DonationCard(donation: donation),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text(foodName), findsOneWidget);
+    expect(find.text('Cooked Meals'), findsOneWidget);
+    expect(find.byIcon(Icons.fastfood_outlined), findsOneWidget);
+    final card = tester.getRect(find.byType(DonationCard));
+    expect(card.left, greaterThanOrEqualTo(0));
+    expect(card.right, lessThanOrEqualTo(320));
   });
 }

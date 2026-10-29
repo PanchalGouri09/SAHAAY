@@ -182,6 +182,31 @@ void main() {
       expect(find.textContaining('Location unavailable'), findsOneWidget);
     });
 
+    testWidgets('unavailable placeholder fits narrow screens and larger text',
+        (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(280, 700);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: MediaQuery(
+            data: MediaQueryData(textScaler: TextScaler.linear(1.5)),
+            child: Scaffold(body: SahaayGoogleMap(height: 160)),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Location unavailable'), findsOneWidget);
+      expect(
+        tester.getRect(find.byType(SahaayGoogleMap)).right,
+        lessThanOrEqualTo(280),
+      );
+    });
+
     testWidgets('map remains inside explicit bounded card constraints',
         (WidgetTester tester) async {
       await tester.pumpWidget(const MaterialApp(

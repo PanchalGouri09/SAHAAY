@@ -1297,6 +1297,12 @@ def test_real_volunteer_accepts_when_project_phone_auth_is_disabled(
         "app.config.get_settings",
         lambda: Settings(firebase_phone_auth_enabled=False),
     )
+    app.dependency_overrides[get_current_firebase_user] = lambda: {
+        "uid": "fb-volunteer-1",
+        "email": "volunteer@example.org",
+        "email_verified": True,
+        "phone_number": None,
+    }
 
     response = client.post(f"/api/v1/deliveries/{task_id}/accept")
 
@@ -1305,10 +1311,14 @@ def test_real_volunteer_accepts_when_project_phone_auth_is_disabled(
 
 
 def test_volunteer_acceptance_still_requires_a_verified_linked_phone(
-    supabase,
+    supabase, monkeypatch
 ) -> None:
     task_id = _volunteer_task_id(supabase)
     _login("volunteer", {"id": "volunteer-1"})
+    monkeypatch.setattr(
+        "app.config.get_settings",
+        lambda: Settings(firebase_phone_auth_enabled=True),
+    )
     app.dependency_overrides[get_current_firebase_user] = lambda: {
         "uid": "fb-volunteer-1",
         "email": "volunteer@example.org",

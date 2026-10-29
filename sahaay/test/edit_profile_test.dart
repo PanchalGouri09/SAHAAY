@@ -47,6 +47,11 @@ class _FakeApi extends ApiService {
   /// depending on the PostgREST relationship shape.
   Map<String, dynamic>? profile;
   Object? profileError;
+  Map<String, dynamic> contactVerification = {
+    'email_verified': true,
+    'phone_verified': false,
+    'phone_auth_configured': false,
+  };
 
   Map<String, dynamic>? lastPatch;
   final List<String> uploadedPhotoPaths = [];
@@ -57,6 +62,10 @@ class _FakeApi extends ApiService {
     if (error != null) throw error;
     return profile!;
   }
+
+  @override
+  Future<Map<String, dynamic>> getContactVerification() async =>
+      contactVerification;
 
   @override
   Future<Map<String, dynamic>> updateProfile(
@@ -153,8 +162,13 @@ Widget _appWithState(Widget child, _FakeApi api) =>
 /// Opens Settings (the real navigation path) and taps "Edit profile details",
 /// exactly like the user does. Uses a phone-tall viewport so the whole form
 /// (which lives in a ListView) is laid out at once.
-Future<void> _openEditProfile(WidgetTester tester, UserRole role) async {
-  tester.view.physicalSize = const Size(1080, 3600);
+Future<void> _openEditProfile(
+  WidgetTester tester,
+  UserRole role, {
+  double width = 1080,
+  double height = 3600,
+}) async {
+  tester.view.physicalSize = Size(width, height);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
@@ -284,6 +298,47 @@ void main() {
 
   group('Edit Profile — existing data is displayed (the "blank screen" bug)',
       () {
+    testWidgets(
+        'shows phone linking when backend phone verification is enabled',
+        (tester) async {
+      final api = _FakeApi(profile: _providerProfile())
+        ..contactVerification = {
+          'email_verified': true,
+          'phone_verified': false,
+          'phone_auth_configured': true,
+        };
+      _lastApi = api;
+      await _openEditProfile(tester, UserRole.provider);
+
+      expect(
+        find.text(
+          'Link a verified phone to accept deliveries and complete protected handover actions.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('VERIFY PHONE NUMBER'), findsOneWidget);
+    });
+
+    testWidgets('profile sections stay readable on a narrow screen',
+        (tester) async {
+      final api = _FakeApi(profile: _providerProfile());
+      _lastApi = api;
+      await _openEditProfile(
+        tester,
+        UserRole.provider,
+        width: 320,
+        height: 2400,
+      );
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Personal information'), findsOneWidget);
+      expect(find.text('Organization profile'), findsOneWidget);
+      expect(
+        tester.getRect(find.byType(Form)).right,
+        lessThanOrEqualTo(320),
+      );
+    });
+
     testWidgets('provider: every field is prefilled from GET /profile',
         (tester) async {
       final api = _FakeApi(profile: _providerProfile());
@@ -292,7 +347,7 @@ void main() {
 
       // The screen must show the REAL account data, not an empty form.
       expect(find.text('Gouri Panchal'), findsOneWidget);
-      expect(find.text('Shree krishna veg'), findsOneWidget);
+      expect(find.text('Shree krishna veg'), findsNWidgets(2));
       expect(find.text('VadgaonSheri'), findsOneWidget);
       expect(find.text('Pune'), findsOneWidget);
       expect(find.text('8830392843'), findsWidgets);
@@ -312,7 +367,7 @@ void main() {
       await _openEditProfile(tester, UserRole.provider);
 
       expect(find.text('Gouri Panchal'), findsOneWidget);
-      expect(find.text('Shree krishna veg'), findsOneWidget);
+      expect(find.text('Shree krishna veg'), findsNWidgets(2));
       expect(find.text('VadgaonSheri'), findsOneWidget);
       expect(find.text('Pune'), findsOneWidget);
     });
@@ -324,7 +379,7 @@ void main() {
       await _openEditProfile(tester, UserRole.ngo);
 
       expect(find.text('Gouri'), findsOneWidget);
-      expect(find.text('Old age home'), findsOneWidget);
+      expect(find.text('Old age home'), findsNWidgets(2));
       expect(find.text('VadgaonSheri'), findsOneWidget);
       expect(find.text('4545'), findsOneWidget);
       expect(find.text('A safe home for senior citizens.'), findsOneWidget);
@@ -350,7 +405,7 @@ void main() {
       api.profileError = null;
       await tester.tap(find.text('Retry'));
       await tester.pumpAndSettle();
-      expect(find.text('Shree krishna veg'), findsOneWidget);
+      expect(find.text('Shree krishna veg'), findsNWidgets(2));
       expect(find.text('SAVE CHANGES'), findsOneWidget);
     });
   });

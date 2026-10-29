@@ -19,6 +19,7 @@ DEVICE_TOKENS_TABLE = "user_device_tokens"
 ANDROID_CHANNEL_ID = "sahaay_notifications_v2"
 ANDROID_NOTIFICATION_SOUND = "sahaay_ting_ting"
 _SAFE_FCM_ERROR_CODE = re.compile(r"(?:messaging/)?[a-z0-9_-]{1,64}\Z")
+_SAFE_EVENT_TYPE = re.compile(r"[a-z0-9_]{1,64}\Z")
 
 
 def _device_tokens(client, user_id: str) -> list[dict]:
@@ -69,7 +70,18 @@ def send_push_notification_to_user(
 ) -> dict:
     """Push to registered devices; acceptance by FCM does not confirm receipt."""
     result = {"accepted_by_fcm": 0, "failed": 0, "invalid": 0}
+    requested_event_type = (data or {}).get("type")
+    event_type = (
+        requested_event_type
+        if isinstance(requested_event_type, str)
+        and _SAFE_EVENT_TYPE.fullmatch(requested_event_type)
+        else "unknown"
+    )
     if not user_id:
+        logger.info(
+            "FCM dispatch stage=lookup outcome=missing_recipient event_type=%s",
+            event_type,
+        )
         return result
 
     try:
@@ -77,7 +89,9 @@ def send_push_notification_to_user(
         tokens = _device_tokens(client, user_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "FCM device-token lookup initialization failed error_type=%s",
+            "FCM dispatch stage=lookup outcome=failed event_type=%s "
+            "error_type=%s",
+            event_type,
             type(exc).__name__,
         )
         return result
@@ -88,15 +102,29 @@ def send_push_notification_to_user(
         and isinstance(row.get("token"), str)
         and row["token"].strip()
     ]
-    logger.info("FCM send attempted recipient_count=%d", len(tokens))
+    logger.info(
+        "FCM dispatch stage=lookup outcome=complete event_type=%s "
+        "device_count=%d",
+        event_type,
+        len(tokens),
+    )
     if not tokens:
-        logger.info("FCM push skipped reason=no_registered_device_tokens")
+        logger.info(
+            "FCM dispatch stage=send outcome=no_registered_device_tokens "
+            "event_type=%s",
+            event_type,
+        )
         return result
 
     try:
         app = firebase_auth.get_firebase_app()
     except Exception as exc:  # noqa: BLE001
-        logger.error("FCM initialization failed error_type=%s", type(exc).__name__)
+        logger.error(
+            "FCM dispatch stage=initialize outcome=failed event_type=%s "
+            "error_type=%s",
+            event_type,
+            type(exc).__name__,
+        )
         result["failed"] = len(tokens)
         return result
 
@@ -118,7 +146,10 @@ def send_push_notification_to_user(
         except firebase_messaging.UnregisteredError:
             result["invalid"] += 1
             _prune_token(client, token)
-            logger.info("FCM removed an unregistered device token")
+            logger.info(
+                "FCM dispatch stage=send outcome=invalid_token event_type=%s",
+                event_type,
+            )
         except Exception as exc:  # noqa: BLE001
             result["failed"] += 1
             code = getattr(exc, "code", None)
@@ -128,12 +159,16 @@ def send_push_notification_to_user(
                 else "unknown"
             )
             logger.warning(
-                "FCM send failed error_type=%s error_code=%s",
+                "FCM dispatch stage=send outcome=failed event_type=%s "
+                "error_type=%s error_code=%s",
+                event_type,
                 type(exc).__name__,
                 safe_code,
             )
     logger.info(
-        "FCM send result accepted_by_fcm=%d failed=%d invalid=%d",
+        "FCM dispatch stage=send outcome=complete event_type=%s "
+        "accepted_by_fcm=%d failed=%d invalid=%d",
+        event_type,
         result["accepted_by_fcm"],
         result["failed"],
         result["invalid"],

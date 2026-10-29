@@ -77,6 +77,9 @@ class ApiService {
   Future<Map<String, dynamic>> getProfile() =>
       _request('GET', '/api/v1/profile');
 
+  Future<Map<String, dynamic>> getContactVerification() =>
+      _request('GET', '/api/v1/profile/contact-verification');
+
   Future<Map<String, dynamic>> createProfile(Map<String, dynamic> payload) =>
       _request('POST', '/api/v1/profile', body: payload);
 

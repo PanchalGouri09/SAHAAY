@@ -32,7 +32,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart' show kIsWeb, ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
@@ -1705,10 +1705,10 @@ class AppColors {
     greenSoft: Color(0xFFE6F2D9),
     warning: Color(0xFFF2A93B),
     danger: Color(0xFFE0483F),
-    background: Color(0xFFF6FAFF),
+    background: Color(0xFFF6F8FB),
     surface: Colors.white,
-    surfaceAlt: Color(0xFFEFF5FC),
-    border: Color(0xFFE1E9F5),
+    surfaceAlt: Color(0xFFF0F2F5),
+    border: Color(0xFFD0D5DD),
     textPrimary: Color(0xFF17233B),
     textSecondary: Color(0xFF5B6B85),
   );
@@ -1721,10 +1721,10 @@ class AppColors {
     greenSoft: Color(0xFF223420),
     warning: Color(0xFFF2B155),
     danger: Color(0xFFEF6B62),
-    background: Color(0xFF14171C), // dark grey, NOT pure black
+    background: Color(0xFF14171C),
     surface: Color(0xFF1E222A),
     surfaceAlt: Color(0xFF262B34),
-    border: Color(0xFF323844),
+    border: Color(0xFF414854),
     textPrimary: Color(0xFFF2F5FA),
     textSecondary: Color(0xFFA9B4C4),
   );
@@ -1748,8 +1748,6 @@ class AppRadius {
 }
 
 TextTheme _buildTextTheme(AppColors c) {
-  // Flipkart-Minutes-inspired feel: bold, compact, strong hierarchy —
-  // without copying their branding or screens.
   return TextTheme(
     displayLarge: TextStyle(
         fontSize: 34,
@@ -1769,14 +1767,14 @@ TextTheme _buildTextTheme(AppColors c) {
     titleLarge: TextStyle(
         fontSize: 17, fontWeight: FontWeight.w700, color: c.textPrimary),
     titleMedium: TextStyle(
-        fontSize: 15, fontWeight: FontWeight.w600, color: c.textPrimary),
+        fontSize: 15, fontWeight: FontWeight.w700, color: c.textPrimary),
     bodyLarge: TextStyle(
         fontSize: 15,
         fontWeight: FontWeight.w400,
         color: c.textPrimary,
         height: 1.4),
     bodyMedium: TextStyle(
-        fontSize: 13.5,
+        fontSize: 14,
         fontWeight: FontWeight.w400,
         color: c.textSecondary,
         height: 1.4),
@@ -1808,11 +1806,73 @@ ThemeData _buildTheme(AppColors c, Brightness brightness) {
     dividerColor: c.border,
   );
 
+  Widget primaryButtonBackground(
+    BuildContext context,
+    Set<WidgetState> states,
+    Widget? child,
+  ) {
+    final disabled = states.contains(WidgetState.disabled);
+    final pressed = states.contains(WidgetState.pressed);
+    final focused = states.contains(WidgetState.focused);
+    final primaryEnd = brightness == Brightness.light
+        ? c.blueDark
+        : Color.lerp(c.bluePrimary, Colors.black, 0.14)!;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOutCubic,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(AppRadius.button),
+        gradient: disabled
+            ? null
+            : LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: pressed
+                    ? [primaryEnd, c.bluePrimary]
+                    : [c.bluePrimary, primaryEnd],
+              ),
+        color: disabled ? c.surfaceAlt : null,
+        border: Border.all(
+          color: disabled
+              ? c.border
+              : focused
+                  ? c.blueLight
+                  : Colors.white.withValues(
+                      alpha: brightness == Brightness.dark ? 0.12 : 0.22,
+                    ),
+          width: focused ? 1.6 : 1,
+        ),
+      ),
+      child: child,
+    );
+  }
+
+  final primaryButtonForeground =
+      WidgetStateProperty.resolveWith<Color?>((states) {
+    return states.contains(WidgetState.disabled)
+        ? c.textSecondary
+        : Colors.white;
+  });
+  final primaryButtonElevation =
+      WidgetStateProperty.resolveWith<double?>((states) {
+    if (states.contains(WidgetState.disabled)) return 0;
+    if (states.contains(WidgetState.pressed)) return 1;
+    if (states.contains(WidgetState.hovered) ||
+        states.contains(WidgetState.focused)) {
+      return 4;
+    }
+    return 2;
+  });
+
   return base.copyWith(
     appBarTheme: AppBarTheme(
-      backgroundColor: c.background,
+      backgroundColor: c.surface,
       foregroundColor: c.textPrimary,
       elevation: 0,
+      scrolledUnderElevation: 2,
+      shadowColor: const Color(0xFF475569).withValues(
+        alpha: brightness == Brightness.dark ? 0.28 : 0.12,
+      ),
       centerTitle: false,
       surfaceTintColor: Colors.transparent,
       titleTextStyle: TextStyle(
@@ -1820,42 +1880,107 @@ ThemeData _buildTheme(AppColors c, Brightness brightness) {
     ),
     cardTheme: CardThemeData(
       color: c.surface,
-      elevation: 0,
+      elevation: 4,
+      shadowColor: const Color(0xFF475569).withValues(
+        alpha: brightness == Brightness.dark ? 0.38 : 0.22,
+      ),
+      surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppRadius.card),
-        side: BorderSide(color: c.border),
+        side: BorderSide(
+          color: c.border.withValues(
+            alpha: brightness == Brightness.dark ? 0.96 : 0.9,
+          ),
+        ),
       ),
       margin: EdgeInsets.zero,
     ),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
-        backgroundColor: c.bluePrimary,
+        backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
         minimumSize: const Size.fromHeight(52),
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(AppRadius.button)),
         textStyle: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w700),
-        elevation: 0,
+        overlayColor: Colors.white.withValues(alpha: 0.12),
+        elevation: 3,
+        shadowColor: c.bluePrimary.withValues(
+          alpha: brightness == Brightness.dark ? 0.32 : 0.22,
+        ),
+      ).copyWith(
+        backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
+        foregroundColor: primaryButtonForeground,
+        elevation: primaryButtonElevation,
+        backgroundBuilder: primaryButtonBackground,
+        animationDuration: const Duration(milliseconds: 180),
+      ),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: Colors.transparent,
+        foregroundColor: Colors.white,
+        minimumSize: const Size.fromHeight(48),
+        padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.button),
+        ),
+        textStyle: const TextStyle(fontWeight: FontWeight.w700),
+        elevation: 3,
+        shadowColor: c.bluePrimary.withValues(
+          alpha: brightness == Brightness.dark ? 0.3 : 0.2,
+        ),
+      ).copyWith(
+        backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
+        foregroundColor: primaryButtonForeground,
+        elevation: primaryButtonElevation,
+        backgroundBuilder: primaryButtonBackground,
+        animationDuration: const Duration(milliseconds: 180),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
         foregroundColor: c.bluePrimary,
         minimumSize: const Size.fromHeight(52),
-        side: BorderSide(color: c.bluePrimary),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        side: BorderSide(color: c.border),
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(AppRadius.button)),
         textStyle: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w700),
+        overlayColor: c.bluePrimary.withValues(alpha: 0.08),
+        animationDuration: const Duration(milliseconds: 180),
+      ).copyWith(
+        backgroundColor: WidgetStateProperty.resolveWith<Color?>((states) {
+          if (states.contains(WidgetState.pressed)) {
+            return c.bluePrimary.withValues(alpha: 0.09);
+          }
+          return Colors.transparent;
+        }),
+        side: WidgetStateProperty.resolveWith<BorderSide?>((states) {
+          if (states.contains(WidgetState.disabled)) {
+            return BorderSide(color: c.border.withValues(alpha: 0.7));
+          }
+          if (states.contains(WidgetState.focused)) {
+            return BorderSide(color: c.bluePrimary, width: 1.8);
+          }
+          return BorderSide(color: c.border);
+        }),
       ),
     ),
     textButtonTheme: TextButtonThemeData(
       style: TextButton.styleFrom(
-          foregroundColor: c.bluePrimary,
-          textStyle: const TextStyle(fontWeight: FontWeight.w700)),
+        foregroundColor: c.bluePrimary,
+        minimumSize: const Size(0, 48),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.button),
+        ),
+        textStyle: const TextStyle(fontWeight: FontWeight.w700),
+        animationDuration: const Duration(milliseconds: 180),
+      ),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: c.surface,
+      fillColor: c.surfaceAlt,
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppRadius.button),
@@ -1865,7 +1990,7 @@ ThemeData _buildTheme(AppColors c, Brightness brightness) {
           borderSide: BorderSide(color: c.border)),
       focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppRadius.button),
-          borderSide: BorderSide(color: c.bluePrimary, width: 1.6)),
+          borderSide: BorderSide(color: c.bluePrimary, width: 2)),
       errorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppRadius.button),
           borderSide: BorderSide(color: c.danger)),
@@ -1882,17 +2007,134 @@ ThemeData _buildTheme(AppColors c, Brightness brightness) {
     ),
     bottomNavigationBarTheme: BottomNavigationBarThemeData(
       backgroundColor: c.surface,
+      elevation: 4,
       selectedItemColor: c.bluePrimary,
       unselectedItemColor: c.textSecondary,
       showUnselectedLabels: true,
       type: BottomNavigationBarType.fixed,
+      selectedIconTheme: const IconThemeData(size: 24),
+      unselectedIconTheme: const IconThemeData(size: 22),
       selectedLabelStyle:
-          const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700),
+          const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700),
       unselectedLabelStyle:
-          const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500),
+          const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w500),
     ),
-    snackBarTheme: const SnackBarThemeData(behavior: SnackBarBehavior.floating),
+    navigationBarTheme: NavigationBarThemeData(
+      backgroundColor: c.surface,
+      elevation: 8,
+      shadowColor: const Color(0xFF475569).withValues(
+        alpha: brightness == Brightness.dark ? 0.28 : 0.12,
+      ),
+      indicatorColor: c.bluePrimary.withValues(
+        alpha: brightness == Brightness.dark ? 0.32 : 0.18,
+      ),
+      height: 72,
+      iconTheme: WidgetStateProperty.resolveWith<IconThemeData?>((states) {
+        return IconThemeData(
+          size: states.contains(WidgetState.selected) ? 23 : 21,
+          color: states.contains(WidgetState.selected)
+              ? c.bluePrimary
+              : c.textSecondary,
+        );
+      }),
+      labelTextStyle: WidgetStateProperty.resolveWith<TextStyle?>((states) {
+        return TextStyle(
+          fontSize: 11,
+          fontWeight: states.contains(WidgetState.selected)
+              ? FontWeight.w700
+              : FontWeight.w500,
+          color: states.contains(WidgetState.selected)
+              ? c.bluePrimary
+              : c.textSecondary,
+        );
+      }),
+    ),
+    tabBarTheme: TabBarThemeData(
+      labelColor: c.bluePrimary,
+      unselectedLabelColor: c.textSecondary,
+      labelStyle: const TextStyle(fontWeight: FontWeight.w700),
+      unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500),
+      indicatorColor: c.bluePrimary,
+      dividerColor: c.border,
+      overlayColor:
+          WidgetStatePropertyAll(c.bluePrimary.withValues(alpha: 0.06)),
+    ),
+    iconButtonTheme: IconButtonThemeData(
+      style: IconButton.styleFrom(
+        foregroundColor: c.textSecondary,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.button),
+        ),
+        minimumSize: const Size(48, 48),
+      ),
+    ),
+    floatingActionButtonTheme: FloatingActionButtonThemeData(
+      backgroundColor: c.bluePrimary,
+      foregroundColor: Colors.white,
+      elevation: 3,
+      focusElevation: 4,
+      hoverElevation: 4,
+      highlightElevation: 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.button),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.18)),
+      ),
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: c.surface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 12,
+      shadowColor: const Color(0xFF475569).withValues(
+        alpha: brightness == Brightness.dark ? 0.44 : 0.24,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        side: BorderSide(color: c.border.withValues(alpha: 0.72)),
+      ),
+      titleTextStyle: TextStyle(
+        color: c.textPrimary,
+        fontSize: 20,
+        fontWeight: FontWeight.w700,
+      ),
+      contentTextStyle: TextStyle(
+        color: c.textSecondary,
+        fontSize: 14,
+        height: 1.4,
+      ),
+    ),
+    bottomSheetTheme: BottomSheetThemeData(
+      backgroundColor: c.surface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 10,
+      shadowColor: const Color(0xFF475569).withValues(
+        alpha: brightness == Brightness.dark ? 0.42 : 0.22,
+      ),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+    ),
+    listTileTheme: ListTileThemeData(
+      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+      minVerticalPadding: AppSpacing.sm,
+      iconColor: c.textSecondary,
+      textColor: c.textPrimary,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.button),
+      ),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.button),
+      ),
+      elevation: 4,
+    ),
     dividerTheme: DividerThemeData(color: c.border, thickness: 1),
+    progressIndicatorTheme: ProgressIndicatorThemeData(
+      color: c.bluePrimary,
+      linearTrackColor: c.surfaceAlt,
+      circularTrackColor: c.surfaceAlt,
+    ),
   );
 }
 
@@ -2081,7 +2323,7 @@ class StatCard extends StatelessWidget {
         fg = Colors.white;
         break;
       case Emphasis.primary:
-        bg = c.bluePrimary.withOpacity(0.10);
+        bg = c.bluePrimary.withOpacity(0.16);
         fg = c.bluePrimary;
         break;
       case Emphasis.subtle:
@@ -2096,6 +2338,15 @@ class StatCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppRadius.card),
         border:
             emphasis == Emphasis.strong ? null : Border.all(color: c.border),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF475569).withValues(
+              alpha: emphasis == Emphasis.strong ? 0.22 : 0.12,
+            ),
+            blurRadius: emphasis == Emphasis.strong ? 18 : 14,
+            offset: const Offset(0, 6),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2135,8 +2386,11 @@ class StatusChip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
           color: color.withOpacity(0.14),
-          borderRadius: BorderRadius.circular(AppRadius.chip)),
+          borderRadius: BorderRadius.circular(AppRadius.chip),
+          border: Border.all(color: color.withOpacity(0.12))),
       child: Text(label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: TextStyle(
               color: color, fontWeight: FontWeight.w700, fontSize: 11.5)),
     );
@@ -2163,30 +2417,58 @@ class DonationCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  _donationImage(c),
+                  const SizedBox(width: AppSpacing.md),
                   Expanded(
-                    child: Text(donation.foodName,
-                        style: Theme.of(context).textTheme.titleMedium),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          donation.foodName,
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        Wrap(
+                          spacing: AppSpacing.sm,
+                          runSpacing: AppSpacing.sm,
+                          children: [
+                            StatusChip(
+                              label: donationStatusLabel(donation.status),
+                              color:
+                                  donationStatusColor(donation.status, context),
+                            ),
+                            if (donation.category.trim().isNotEmpty)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: c.surfaceAlt,
+                                  borderRadius:
+                                      BorderRadius.circular(AppRadius.chip),
+                                  border: Border.all(color: c.border),
+                                ),
+                                child: Text(
+                                  donation.category,
+                                  style: TextStyle(
+                                    color: c.textSecondary,
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                  StatusChip(
-                      label: donationStatusLabel(donation.status),
-                      color: donationStatusColor(donation.status, context)),
                 ],
               ),
-              const SizedBox(height: 4),
-              if (donation.providerName.isNotEmpty)
-                Text(donation.providerName,
-                    style: TextStyle(color: c.textSecondary, fontSize: 12.5)),
-              ReadableAddressText(
-                address: donation.providerAddress,
-                latitude: donation.latitude,
-                longitude: donation.longitude,
-                style: TextStyle(color: c.textSecondary, fontSize: 12),
-              ),
-              const SizedBox(height: 10),
+              const Divider(height: AppSpacing.lg),
               Wrap(
-                spacing: 14,
-                runSpacing: 6,
+                spacing: AppSpacing.sm,
+                runSpacing: AppSpacing.sm,
                 children: [
                   _miniInfo(context, Icons.scale_outlined,
                       '${donation.quantityKg.toStringAsFixed(0)} kg • ${donation.servings} servings'),
@@ -2203,8 +2485,49 @@ class DonationCard extends StatelessWidget {
                       'Freshness: ${donation.freshnessLabel}'),
                 ],
               ),
+              const SizedBox(height: AppSpacing.sm),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(AppSpacing.sm),
+                decoration: BoxDecoration(
+                  color: c.surfaceAlt,
+                  borderRadius: BorderRadius.circular(AppRadius.button),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.location_on_outlined,
+                        size: 18, color: c.bluePrimary),
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (donation.providerName.isNotEmpty) ...[
+                            Text(
+                              donation.providerName,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelLarge
+                                  ?.copyWith(color: c.textPrimary),
+                            ),
+                            const SizedBox(height: 2),
+                          ],
+                          ReadableAddressText(
+                            address: donation.providerAddress,
+                            latitude: donation.latitude,
+                            longitude: donation.longitude,
+                            style: TextStyle(
+                                color: c.textSecondary, fontSize: 12.5),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
               if (trailingAction != null) ...[
-                const SizedBox(height: 12),
+                const Divider(height: AppSpacing.lg),
                 trailingAction!
               ],
             ],
@@ -2214,13 +2537,53 @@ class DonationCard extends StatelessWidget {
     );
   }
 
+  Widget _donationImage(AppColors colors) {
+    final url = donation.foodImageUrl?.trim();
+    return Container(
+      width: 68,
+      height: 68,
+      decoration: BoxDecoration(
+        color: colors.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppRadius.button),
+        border: Border.all(color: colors.border),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: url == null || url.isEmpty
+          ? Icon(Icons.fastfood_outlined, color: colors.textSecondary, size: 26)
+          : Image.network(
+              url,
+              fit: BoxFit.cover,
+              semanticLabel: 'Photo of ${donation.foodName}',
+              errorBuilder: (_, __, ___) => Icon(
+                Icons.broken_image_outlined,
+                color: colors.textSecondary,
+                size: 24,
+              ),
+            ),
+    );
+  }
+
   Widget _miniInfo(BuildContext context, IconData icon, String text) {
     final c = AppColors.of(context);
-    return Row(mainAxisSize: MainAxisSize.min, children: [
-      Icon(icon, size: 14, color: c.textSecondary),
-      const SizedBox(width: 4),
-      Text(text, style: TextStyle(fontSize: 12, color: c.textSecondary)),
-    ]);
+    return Container(
+      constraints: const BoxConstraints(minHeight: 34),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: c.surface,
+        border: Border.all(color: c.border),
+        borderRadius: BorderRadius.circular(AppRadius.button),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 15, color: c.bluePrimary),
+        const SizedBox(width: 6),
+        Flexible(
+          child: Text(
+            text,
+            style: TextStyle(fontSize: 12, color: c.textSecondary),
+          ),
+        ),
+      ]),
+    );
   }
 }
 
@@ -2279,6 +2642,71 @@ class SahaayAvatar extends StatelessWidget {
   }
 }
 
+class _AppImageFrame extends StatelessWidget {
+  final String? imageUrl;
+  final double height;
+  final String fallbackLabel;
+  final String semanticLabel;
+
+  const _AppImageFrame({
+    required this.imageUrl,
+    required this.height,
+    required this.fallbackLabel,
+    required this.semanticLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final url = imageUrl?.trim();
+    return Container(
+      width: double.infinity,
+      height: height,
+      decoration: BoxDecoration(
+        color: c.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppRadius.card),
+        border: Border.all(color: c.border),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: url == null || url.isEmpty
+          ? _placeholder(c)
+          : Image.network(
+              url,
+              width: double.infinity,
+              height: height,
+              fit: BoxFit.cover,
+              semanticLabel: semanticLabel,
+              errorBuilder: (_, __, ___) => _placeholder(c),
+            ),
+    );
+  }
+
+  Widget _placeholder(AppColors colors) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.image_not_supported_outlined,
+                  size: 26, color: colors.textSecondary),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                fallbackLabel,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: colors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
 class DashboardHeader extends StatelessWidget {
   final String greeting;
   final String subtitle;
@@ -2303,7 +2731,12 @@ class DashboardHeader extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(
           AppSpacing.lg, AppSpacing.lg, AppSpacing.lg, AppSpacing.xl),
-      decoration: BoxDecoration(color: c.headerFill(context)),
+      decoration: BoxDecoration(
+        color: c.headerFill(context),
+        borderRadius: const BorderRadius.vertical(
+          bottom: Radius.circular(AppRadius.card),
+        ),
+      ),
       child: SafeArea(
         bottom: false,
         child: Row(
@@ -2367,7 +2800,15 @@ class SectionHeader extends StatelessWidget {
     return Row(
       children: [
         Expanded(
-            child: Text(title, style: Theme.of(context).textTheme.titleLarge)),
+            child: Text(
+          title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context)
+              .textTheme
+              .titleLarge
+              ?.copyWith(fontWeight: FontWeight.w800),
+        )),
         if (actionLabel != null)
           TextButton(onPressed: onAction, child: Text(actionLabel!)),
       ],
@@ -2496,20 +2937,90 @@ class NotificationTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     return Card(
-      child: ListTile(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
         onTap: onTap,
-        leading: CircleAvatar(
-          backgroundColor:
-              (item.read ? c.textSecondary : c.bluePrimary).withOpacity(0.12),
-          child: Icon(_categoryIcon,
-              color: item.read ? c.textSecondary : c.bluePrimary, size: 20),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.all(AppSpacing.md),
+          decoration: BoxDecoration(
+            border: Border.all(
+              color:
+                  item.read ? c.border : c.bluePrimary.withValues(alpha: 0.3),
+            ),
+            borderRadius: BorderRadius.circular(AppRadius.card),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: (item.read ? c.textSecondary : c.bluePrimary)
+                      .withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(AppRadius.button),
+                ),
+                child: Icon(
+                  _categoryIcon,
+                  color: item.read ? c.textSecondary : c.bluePrimary,
+                  size: 21,
+                ),
+              ),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight:
+                                item.read ? FontWeight.w600 : FontWeight.w800,
+                          ),
+                    ),
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      item.body,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    if (item.time.isNotEmpty) ...[
+                      const SizedBox(height: AppSpacing.sm),
+                      Text(
+                        item.time,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (!item.read) ...[
+                const SizedBox(width: AppSpacing.sm),
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Semantics(
+                    container: true,
+                    label: 'Unread',
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: c.bluePrimary,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
-        title: Text(item.title,
-            style: TextStyle(
-                fontWeight: item.read ? FontWeight.w600 : FontWeight.w800)),
-        subtitle: Text(item.body),
-        trailing: Text(item.time,
-            style: TextStyle(fontSize: 11, color: c.textSecondary)),
       ),
     );
   }
@@ -2964,20 +3475,68 @@ class MatchScoreCard extends StatelessWidget {
 class EmptyState extends StatelessWidget {
   final IconData icon;
   final String message;
-  const EmptyState({super.key, required this.icon, required this.message});
+  final String? description;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+  const EmptyState({
+    super.key,
+    required this.icon,
+    required this.message,
+    this.description,
+    this.actionLabel,
+    this.onAction,
+  });
 
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 40),
-      child: Column(children: [
-        Icon(icon, size: 40, color: c.textSecondary.withOpacity(0.5)),
-        const SizedBox(height: 10),
-        Text(message,
-            style: TextStyle(color: c.textSecondary),
-            textAlign: TextAlign.center),
-      ]),
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.xl),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 360),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: c.surfaceAlt,
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: c.border),
+                ),
+                child: Icon(icon, size: 30, color: c.textSecondary),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              Text(
+                message,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleMedium
+                    ?.copyWith(color: c.textSecondary),
+                textAlign: TextAlign.center,
+              ),
+              if (description != null) ...[
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  description!,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                  textAlign: TextAlign.center,
+                ),
+              ],
+              if (actionLabel != null && onAction != null) ...[
+                const SizedBox(height: AppSpacing.md),
+                OutlinedButton.icon(
+                  onPressed: onAction,
+                  icon: const Icon(Icons.refresh),
+                  label: Text(actionLabel!),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -3263,6 +3822,32 @@ class _LoginScreenState extends State<LoginScreen>
     }
   }
 
+  Future<void> _openAndroidDownloadPage() async {
+    try {
+      final opened = await launchUrl(Uri.base.resolve('download.html'));
+      if (!opened && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Could not open the Android download page. Please try again.',
+            ),
+          ),
+        );
+      }
+    } on PlatformException catch (error) {
+      debugPrint('Could not open Android download page: $error');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Could not open the Android download page. Please try again.',
+            ),
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
@@ -3378,6 +3963,40 @@ class _LoginScreenState extends State<LoginScreen>
                               child: const Text('Register'),
                             ),
                           ]),
+                      if (kIsWeb) ...[
+                        const SizedBox(height: AppSpacing.sm),
+                        Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(AppSpacing.md),
+                            child: Column(
+                              children: [
+                                Text(
+                                  'Prefer the Android app?',
+                                  style:
+                                      Theme.of(context).textTheme.titleMedium,
+                                  textAlign: TextAlign.center,
+                                ),
+                                const SizedBox(height: AppSpacing.xs),
+                                Text(
+                                  'Download the SAHAAY APK or scan its QR code.',
+                                  style: Theme.of(context).textTheme.bodyMedium,
+                                  textAlign: TextAlign.center,
+                                ),
+                                TextButton.icon(
+                                  onPressed: _openAndroidDownloadPage,
+                                  icon: const Icon(
+                                    Icons.android,
+                                    size: 20,
+                                  ),
+                                  label: const Text(
+                                    'Download SAHAAY for Android',
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -3407,55 +4026,57 @@ class RoleSelectionScreen extends StatelessWidget {
       appBar: AppBar(
           title: const Text('Join SAHAAY'),
           actions: const [ThemeToggleButton()]),
-      body: Padding(
-        padding: const EdgeInsets.all(AppSpacing.lg),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-                googleEnrollment
-                    ? 'Finish setting up your account'
-                    : 'What would you like to do?',
-                style: Theme.of(context).textTheme.headlineSmall),
-            const SizedBox(height: AppSpacing.sm),
-            if (googleEnrollment) ...[
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
               Text(
-                'You are signed in with Google. Choose a role to create your SAHAAY profile.',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: AppColors.of(context).textSecondary),
-              ),
+                  googleEnrollment
+                      ? 'Finish setting up your account'
+                      : 'What would you like to do?',
+                  style: Theme.of(context).textTheme.headlineSmall),
               const SizedBox(height: AppSpacing.sm),
+              if (googleEnrollment) ...[
+                Text(
+                  'You are signed in with Google. Choose a role to create your SAHAAY profile.',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodyMedium
+                      ?.copyWith(color: AppColors.of(context).textSecondary),
+                ),
+                const SizedBox(height: AppSpacing.sm),
+              ],
+              RoleCard(
+                icon: Icons.restaurant_outlined,
+                title: 'Food Provider',
+                subtitle:
+                    'Restaurant, hotel, college canteen or caterer donating surplus food.',
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => RegisterProviderScreen(
+                        googleEnrollment: googleEnrollment))),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              RoleCard(
+                icon: Icons.apartment_outlined,
+                title: 'NGO',
+                subtitle: 'Discover and claim surplus food for your community.',
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) =>
+                        RegisterNgoScreen(googleEnrollment: googleEnrollment))),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              RoleCard(
+                icon: Icons.volunteer_activism_outlined,
+                title: 'Volunteer',
+                subtitle: 'Help deliver food from providers to nearby NGOs.',
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => RegisterVolunteerScreen(
+                        googleEnrollment: googleEnrollment))),
+              ),
             ],
-            RoleCard(
-              icon: Icons.restaurant_outlined,
-              title: 'Food Provider',
-              subtitle:
-                  'Restaurant, hotel, college canteen or caterer donating surplus food.',
-              onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => RegisterProviderScreen(
-                      googleEnrollment: googleEnrollment))),
-            ),
-            const SizedBox(height: AppSpacing.md),
-            RoleCard(
-              icon: Icons.apartment_outlined,
-              title: 'NGO',
-              subtitle: 'Discover and claim surplus food for your community.',
-              onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) =>
-                      RegisterNgoScreen(googleEnrollment: googleEnrollment))),
-            ),
-            const SizedBox(height: AppSpacing.md),
-            RoleCard(
-              icon: Icons.volunteer_activism_outlined,
-              title: 'Volunteer',
-              subtitle: 'Help deliver food from providers to nearby NGOs.',
-              onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => RegisterVolunteerScreen(
-                      googleEnrollment: googleEnrollment))),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -3619,6 +4240,7 @@ class _RegisterProviderScreenState extends State<RegisterProviderScreen> {
                 const SizedBox(height: AppSpacing.md),
                 DropdownButtonFormField<ProviderType>(
                   value: _type,
+                  isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Provider Type'),
                   items: ProviderType.values
                       .map((t) => DropdownMenuItem(
@@ -4609,6 +5231,7 @@ class _DailyFoodEntryScreenState extends State<DailyFoodEntryScreen> {
                       children: [
                         DropdownButtonFormField<String>(
                           initialValue: _category,
+                          isExpanded: true,
                           decoration:
                               const InputDecoration(labelText: 'Food Category'),
                           items: _kDailyFoodCategories
@@ -4621,9 +5244,9 @@ class _DailyFoodEntryScreenState extends State<DailyFoodEntryScreen> {
                                   setState(() => _category = v ?? _category),
                         ),
                         const SizedBox(height: AppSpacing.md),
-                        Row(children: [
-                          Expanded(
-                            child: AppInputField(
+                        LayoutBuilder(
+                          builder: (context, constraints) {
+                            final preparedField = AppInputField(
                               label: 'Prepared food (kg)',
                               controller: _preparedController,
                               prefixIcon: Icons.kitchen_outlined,
@@ -4632,11 +5255,8 @@ class _DailyFoodEntryScreenState extends State<DailyFoodEntryScreen> {
                                       decimal: true),
                               validator: (v) =>
                                   _validateKg(v, isPrepared: true),
-                            ),
-                          ),
-                          const SizedBox(width: AppSpacing.md),
-                          Expanded(
-                            child: AppInputField(
+                            );
+                            final soldField = AppInputField(
                               label: 'Sold / consumed (kg)',
                               controller: _soldController,
                               prefixIcon: Icons.point_of_sale_outlined,
@@ -4644,12 +5264,30 @@ class _DailyFoodEntryScreenState extends State<DailyFoodEntryScreen> {
                                   const TextInputType.numberWithOptions(
                                       decimal: true),
                               validator: _validateSoldAgainstPrepared,
-                            ),
-                          ),
-                        ]),
+                            );
+                            if (constraints.maxWidth < 420) {
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  preparedField,
+                                  const SizedBox(height: AppSpacing.md),
+                                  soldField,
+                                ],
+                              );
+                            }
+                            return Row(
+                              children: [
+                                Expanded(child: preparedField),
+                                const SizedBox(width: AppSpacing.md),
+                                Expanded(child: soldField),
+                              ],
+                            );
+                          },
+                        ),
                         const SizedBox(height: AppSpacing.md),
                         DropdownButtonFormField<String>(
                           initialValue: _mealType,
+                          isExpanded: true,
                           decoration: const InputDecoration(
                             labelText: 'Meal type (optional)',
                             hintText: 'Not specified',
@@ -5496,22 +6134,12 @@ class _ProviderDashboardScreenState extends State<ProviderDashboardScreen> {
             body: Center(
               child: Padding(
                 padding: const EdgeInsets.all(AppSpacing.lg),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.cloud_off_outlined,
-                        size: 40, color: Theme.of(context).colorScheme.outline),
-                    const SizedBox(height: AppSpacing.md),
-                    Text(_error!,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(fontSize: 13)),
-                    const SizedBox(height: AppSpacing.md),
-                    TextButton.icon(
-                      onPressed: _loadDonations,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Retry'),
-                    ),
-                  ],
+                child: EmptyState(
+                  icon: Icons.cloud_off_outlined,
+                  message: 'Could not load donations.',
+                  description: _error!,
+                  actionLabel: 'Retry',
+                  onAction: _loadDonations,
                 ),
               ),
             ),
@@ -6322,6 +6950,30 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
     ));
   }
 
+  Widget _responsiveFields(Widget first, Widget second) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 420) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              first,
+              const SizedBox(height: AppSpacing.md),
+              second,
+            ],
+          );
+        }
+        return Row(
+          children: [
+            Expanded(child: first),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(child: second),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
@@ -6357,6 +7009,8 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
                 Text('Fill in the surplus food details below.',
                     style: TextStyle(color: c.textSecondary)),
                 const SizedBox(height: AppSpacing.lg),
+                const SectionHeader(title: 'Food details'),
+                const SizedBox(height: AppSpacing.sm),
                 AppInputField(
                   label: 'Food Name',
                   controller: _foodNameController,
@@ -6367,6 +7021,7 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
                 const SizedBox(height: AppSpacing.md),
                 DropdownButtonFormField<String>(
                   value: _category,
+                  isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Food Category'),
                   items: _kFoodCategories
                       .map((cat) =>
@@ -6378,6 +7033,7 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
                 DropdownButtonFormField<String>(
                   key: const ValueKey('donation-food-type'),
                   initialValue: _vegType,
+                  isExpanded: true,
                   decoration: const InputDecoration(
                     labelText: 'Food type',
                     hintText: 'Select the dietary type',
@@ -6395,6 +7051,7 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
                 const SizedBox(height: AppSpacing.md),
                 DropdownButtonFormField<String>(
                   value: _storageCondition,
+                  isExpanded: true,
                   decoration: const InputDecoration(
                       labelText: 'Storage Condition',
                       hintText: 'How is it stored?'),
@@ -6405,6 +7062,8 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
                   onChanged: (v) => setState(
                       () => _storageCondition = v ?? _storageCondition),
                 ),
+                const SectionHeader(title: 'Pickup details'),
+                const SizedBox(height: AppSpacing.sm),
                 const SizedBox(height: AppSpacing.md),
                 AppInputField(
                   label: 'Pickup Address',
@@ -6440,33 +7099,30 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
                   ),
                 ),
                 const SizedBox(height: AppSpacing.md),
-                Row(children: [
-                  Expanded(
-                    child: AppInputField(
-                      label: 'Quantity (kg)',
-                      controller: _quantityController,
-                      prefixIcon: Icons.scale_outlined,
-                      keyboardType: TextInputType.number,
-                      validator: (v) =>
-                          (v == null || double.tryParse(v.trim()) == null)
-                              ? 'Enter a number'
-                              : null,
-                    ),
+                const SectionHeader(title: 'Quantity and freshness'),
+                const SizedBox(height: AppSpacing.sm),
+                _responsiveFields(
+                  AppInputField(
+                    label: 'Quantity (kg)',
+                    controller: _quantityController,
+                    prefixIcon: Icons.scale_outlined,
+                    keyboardType: TextInputType.number,
+                    validator: (v) =>
+                        (v == null || double.tryParse(v.trim()) == null)
+                            ? 'Enter a number'
+                            : null,
                   ),
-                  const SizedBox(width: AppSpacing.md),
-                  Expanded(
-                    child: AppInputField(
-                      label: 'Servings',
-                      controller: _servingsController,
-                      prefixIcon: Icons.restaurant_outlined,
-                      keyboardType: TextInputType.number,
-                      validator: (v) =>
-                          (v == null || int.tryParse(v.trim()) == null)
-                              ? 'Enter a number'
-                              : null,
-                    ),
+                  AppInputField(
+                    label: 'Servings',
+                    controller: _servingsController,
+                    prefixIcon: Icons.restaurant_outlined,
+                    keyboardType: TextInputType.number,
+                    validator: (v) =>
+                        (v == null || int.tryParse(v.trim()) == null)
+                            ? 'Enter a number'
+                            : null,
                   ),
-                ]),
+                ),
                 const SizedBox(height: AppSpacing.sm),
                 Text('Safe to consume for: ${_expiryHours.round()} hours',
                     style: TextStyle(color: c.textSecondary)),
@@ -6479,13 +7135,7 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
                   onChanged: (v) => setState(() => _expiryHours = v),
                 ),
                 const SizedBox(height: AppSpacing.md),
-                Text(
-                  'Optional — surplus prediction',
-                  style: TextStyle(
-                      fontWeight: FontWeight.w700,
-                      color: c.textSecondary,
-                      fontSize: 13),
-                ),
+                const SectionHeader(title: 'Optional surplus prediction'),
                 const SizedBox(height: 4),
                 Text(
                   'Fill BOTH the kg you prepared and the kg you sold today to '
@@ -6493,35 +7143,26 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
                   style: TextStyle(fontSize: 12, color: c.textSecondary),
                 ),
                 const SizedBox(height: AppSpacing.sm),
-                Row(children: [
-                  Expanded(
-                    child: AppInputField(
-                      label: 'Prepared (kg)',
-                      controller: _preparedKgController,
-                      prefixIcon: Icons.kitchen_outlined,
-                      keyboardType: TextInputType.number,
-                      validator: _validateBothOrNeither,
-                    ),
+                _responsiveFields(
+                  AppInputField(
+                    label: 'Prepared (kg)',
+                    controller: _preparedKgController,
+                    prefixIcon: Icons.kitchen_outlined,
+                    keyboardType: TextInputType.number,
+                    validator: _validateBothOrNeither,
                   ),
-                  const SizedBox(width: AppSpacing.md),
-                  Expanded(
-                    child: AppInputField(
-                      label: 'Sold (kg)',
-                      controller: _soldKgController,
-                      prefixIcon: Icons.point_of_sale_outlined,
-                      keyboardType: TextInputType.number,
-                      validator: _validateBothOrNeither,
-                    ),
+                  AppInputField(
+                    label: 'Sold (kg)',
+                    controller: _soldKgController,
+                    prefixIcon: Icons.point_of_sale_outlined,
+                    keyboardType: TextInputType.number,
+                    validator: _validateBothOrNeither,
                   ),
-                ]),
-                const SizedBox(height: AppSpacing.lg),
-                Text(
-                  'Food photo — required',
-                  style: TextStyle(
-                      fontWeight: FontWeight.w700,
-                      color: c.textSecondary,
-                      fontSize: 13),
                 ),
+                const SizedBox(height: AppSpacing.lg),
+                const SectionHeader(title: 'Food photo'),
+                Text('Food photo — required',
+                    style: Theme.of(context).textTheme.labelMedium),
                 const SizedBox(height: 4),
                 Text(
                   'Take a photo or choose one so NGOs can see what is available.',
@@ -6534,8 +7175,9 @@ class _CreateDonationSheetState extends State<_CreateDonationSheet> {
                   child: Container(
                     padding: const EdgeInsets.all(AppSpacing.md),
                     decoration: BoxDecoration(
-                      color: c.border,
-                      borderRadius: BorderRadius.circular(12),
+                      color: c.surfaceAlt,
+                      borderRadius: BorderRadius.circular(AppRadius.button),
+                      border: Border.all(color: c.border),
                     ),
                     child: _photo == null
                         ? Row(children: [
@@ -7025,23 +7667,12 @@ class _ProviderDonationMatchDetailsScreenState
           : ListView(
               padding: const EdgeInsets.all(AppSpacing.lg),
               children: [
-                if (donation.foodImageUrl?.isNotEmpty == true)
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(AppRadius.card),
-                    child: Image.network(
-                      donation.foodImageUrl!,
-                      height: 190,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                    ),
-                  ),
-                if (donation.foodImageUrl?.isNotEmpty != true)
-                  const Card(
-                    child: SizedBox(
-                      height: 64,
-                      child: Center(child: Text('Donation photo unavailable')),
-                    ),
-                  ),
+                _AppImageFrame(
+                  imageUrl: donation.foodImageUrl,
+                  height: 190,
+                  fallbackLabel: 'Donation photo unavailable',
+                  semanticLabel: 'Donation photo',
+                ),
                 Text(donation.foodName,
                     style: Theme.of(context).textTheme.headlineSmall),
                 if (donation.description.isNotEmpty) ...[
@@ -7125,29 +7756,60 @@ class _ProviderDonationMatchDetailsScreenState
                       readableAddressOrUnavailable(donation.providerAddress),
                 ),
                 const SizedBox(height: AppSpacing.lg),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Eligible NGOs',
-                        style: Theme.of(context).textTheme.titleLarge),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: OutlinedButton.icon(
-                        onPressed: _checkingExpiry || !_hasActivePendingOffer
-                            ? null
-                            : _checkExpiry,
-                        icon: _checkingExpiry
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.autorenew, size: 16),
-                        label: const Text('Escalate'),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final screenContentWidth =
+                        MediaQuery.sizeOf(context).width - AppSpacing.lg * 2;
+                    final availableWidth = constraints.maxWidth.isFinite &&
+                            constraints.maxWidth < screenContentWidth
+                        ? constraints.maxWidth
+                        : screenContentWidth;
+                    final narrow = availableWidth < 380;
+                    final heading = Text(
+                      'Eligible NGOs',
+                      maxLines: 2,
+                      softWrap: true,
+                      style: Theme.of(context).textTheme.titleLarge,
+                    );
+                    final escalate = OutlinedButton.icon(
+                      onPressed: _checkingExpiry || !_hasActivePendingOffer
+                          ? null
+                          : _checkExpiry,
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(0, 52),
                       ),
-                    ),
-                  ],
+                      icon: _checkingExpiry
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.autorenew, size: 18),
+                      label: const Text('Escalate'),
+                    );
+                    return SizedBox(
+                      width: availableWidth,
+                      child: narrow
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                heading,
+                                const SizedBox(height: AppSpacing.xs),
+                                Align(
+                                  alignment: Alignment.centerRight,
+                                  child: escalate,
+                                ),
+                              ],
+                            )
+                          : Row(
+                              children: [
+                                Expanded(child: heading),
+                                const SizedBox(width: AppSpacing.sm),
+                                escalate,
+                              ],
+                            ),
+                    );
+                  },
                 ),
                 if (_offersResult != null && !_hasActivePendingOffer)
                   Padding(
@@ -7158,7 +7820,20 @@ class _ProviderDonationMatchDetailsScreenState
                     ),
                   ),
                 if (_offersError != null)
-                  Text(_offersError!, style: TextStyle(color: c.danger)),
+                  Container(
+                    margin: const EdgeInsets.only(bottom: AppSpacing.sm),
+                    padding: const EdgeInsets.all(AppSpacing.md),
+                    decoration: BoxDecoration(
+                      color: c.danger.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(AppRadius.button),
+                      border:
+                          Border.all(color: c.danger.withValues(alpha: 0.3)),
+                    ),
+                    child: Text(
+                      _offersError!,
+                      style: TextStyle(color: c.danger),
+                    ),
+                  ),
                 if (_offersResult?['refresh_warning'] is String &&
                     (_offersResult!['refresh_warning'] as String).isNotEmpty)
                   Padding(
@@ -7189,6 +7864,7 @@ class _ProviderDonationMatchDetailsScreenState
                             key:
                                 const ValueKey('donation-food-type-correction'),
                             initialValue: _foodTypeToSave,
+                            isExpanded: true,
                             decoration: const InputDecoration(
                               labelText: 'Food type',
                             ),
@@ -7233,9 +7909,28 @@ class _ProviderDonationMatchDetailsScreenState
                     ),
                   ),
                 if (displayedRankings.isEmpty)
-                  Text(
-                    _matchingEmptyStateMessage(),
-                    style: TextStyle(color: c.textSecondary),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(AppSpacing.md),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.hub_outlined,
+                            color: c.bluePrimary,
+                            size: 24,
+                            semanticLabel: 'NGO matching',
+                          ),
+                          const SizedBox(width: AppSpacing.sm),
+                          Expanded(
+                            child: Text(
+                              _matchingEmptyStateMessage(),
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   )
                 else
                   for (final item in displayedRankings) ...[
@@ -7541,19 +8236,13 @@ class ClaimedDonationFacts extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (donation.foodImageUrl?.isNotEmpty == true)
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Image.network(
-              donation.foodImageUrl!,
-              height: 190,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => const SizedBox(
-                height: 80,
-                child: Center(child: Text('Donation photo unavailable')),
-              ),
-            ),
-          ),
+        _AppImageFrame(
+          imageUrl: donation.foodImageUrl,
+          height: 190,
+          fallbackLabel: 'Donation photo unavailable',
+          semanticLabel: 'Donation photo',
+        ),
+        const SizedBox(height: AppSpacing.md),
         Card(
           child: Padding(
             padding: const EdgeInsets.all(AppSpacing.md),
@@ -7570,6 +8259,23 @@ class ClaimedDonationFacts extends StatelessWidget {
                   'Quantity',
                   '${donation.quantity.toStringAsFixed(1)} ${donation.quantityUnit} • ${donation.servings} servings',
                 ),
+                _fact(context, 'Donation status',
+                    donationStatusLabel(donation.status)),
+                _fact(context, 'Claim status', _text(donation.claimStatus)),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.md),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Food and pickup timing',
+                    style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: AppSpacing.xs),
                 _fact(context, 'Food type', _text(donation.vegType)),
                 _fact(context, 'Freshness', donation.freshnessLabel),
                 _fact(
@@ -7597,14 +8303,11 @@ class ClaimedDonationFacts extends StatelessWidget {
                       ? 'Not provided'
                       : _dateTimeLabel(donation.createdAt!),
                 ),
-                _fact(context, 'Donation status',
-                    donationStatusLabel(donation.status)),
-                _fact(context, 'Claim status', _text(donation.claimStatus)),
               ],
             ),
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: AppSpacing.md),
         SahaayGoogleMap(
           height: 190,
           points: points,
@@ -7639,6 +8342,7 @@ class ClaimedDonationFacts extends StatelessWidget {
               ),
           ],
         ),
+        const SizedBox(height: AppSpacing.md),
         Card(
           child: Padding(
             padding: const EdgeInsets.all(AppSpacing.md),
@@ -7664,7 +8368,17 @@ class ClaimedDonationFacts extends StatelessWidget {
                   providerDetails['phone']?.toString() ??
                       donation.providerContactNumber,
                 ),
-                const Divider(),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.md),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
                 Text('Receiving NGO',
                     style: Theme.of(context).textTheme.titleMedium),
                 _fact(
@@ -7678,11 +8392,23 @@ class ClaimedDonationFacts extends StatelessWidget {
                   readableAddressOrUnavailable(destination),
                 ),
                 _phone(context, 'Contact', ngoDetails['phone']?.toString()),
-                if (coordination.isNotEmpty) ...[
-                  const Divider(),
+              ],
+            ),
+          ),
+        ),
+        if (coordination.isNotEmpty) ...[
+          const SizedBox(height: AppSpacing.md),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(AppSpacing.md),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Delivery coordination',
+                      style: Theme.of(context).textTheme.titleMedium),
                   _fact(
                     context,
-                    'Delivery coordination',
+                    'Status',
                     transportCoordinationStatusLabel(coordination['status']),
                   ),
                   _fact(
@@ -7712,10 +8438,10 @@ class ClaimedDonationFacts extends StatelessWidget {
                       ),
                     ),
                 ],
-              ],
+              ),
             ),
           ),
-        ),
+        ],
       ],
     );
   }
@@ -8265,66 +8991,50 @@ class _DonationAiActionsState extends State<_DonationAiActions> {
     final completed = widget.donation.status == DonationStatus.delivered;
     return Wrap(
       spacing: 8,
-      runSpacing: 4,
+      runSpacing: 8,
       children: [
-        SizedBox(
-          height: 34,
-          child: OutlinedButton.icon(
-            onPressed: _matching ? null : _matchNgos,
-            icon: _matching
-                ? const SizedBox(
-                    height: 12,
-                    width: 12,
-                    child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.hub_outlined, size: 16),
-            label: const Text('Request NGO',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-          ),
+        OutlinedButton.icon(
+          onPressed: _matching ? null : _matchNgos,
+          icon: _matching
+              ? const SizedBox(
+                  height: 16,
+                  width: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.hub_outlined, size: 18),
+          label: const Text('View Matched NGOs'),
         ),
         if (!completed)
-          SizedBox(
-            height: 34,
-            child: OutlinedButton.icon(
-              onPressed: _escalating ? null : _checkEscalation,
-              icon: _escalating
-                  ? const SizedBox(
-                      height: 12,
-                      width: 12,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.timelapse_outlined, size: 16),
-              label: const Text('Check Escalation',
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-            ),
+          OutlinedButton.icon(
+            onPressed: _escalating ? null : _checkEscalation,
+            icon: _escalating
+                ? const SizedBox(
+                    height: 16,
+                    width: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.timelapse_outlined, size: 18),
+            label: const Text('Check Escalation'),
           ),
         if (completed)
-          SizedBox(
-            height: 34,
-            child: OutlinedButton.icon(
-              onPressed: _generating ? null : _generateAcknowledgment,
-              icon: _generating
-                  ? const SizedBox(
-                      height: 12,
-                      width: 12,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.picture_as_pdf_outlined, size: 16),
-              label: const Text('Acknowledgment PDF',
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-            ),
+          OutlinedButton.icon(
+            onPressed: _generating ? null : _generateAcknowledgment,
+            icon: _generating
+                ? const SizedBox(
+                    height: 16,
+                    width: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.picture_as_pdf_outlined, size: 18),
+            label: const Text('Acknowledgment PDF'),
           ),
         if (completed)
-          SizedBox(
-            height: 34,
-            child: OutlinedButton.icon(
-              onPressed: _downloading ? null : _downloadAcknowledgment,
-              icon: _downloading
-                  ? const SizedBox(
-                      height: 12,
-                      width: 12,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.download_outlined, size: 16),
-              label: const Text('Download Receipt',
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-            ),
+          OutlinedButton.icon(
+            onPressed: _downloading ? null : _downloadAcknowledgment,
+            icon: _downloading
+                ? const SizedBox(
+                    height: 16,
+                    width: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.download_outlined, size: 18),
+            label: const Text('Download Receipt'),
           ),
       ],
     );
@@ -8372,14 +9082,25 @@ class _ProviderOfferStatus extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(AppSpacing.sm),
-        decoration: BoxDecoration(
-          color: AppColors.of(context).surfaceAlt,
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Text(_label(), style: const TextStyle(fontSize: 12)),
-      );
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: c.surfaceAlt,
+        border: Border.all(color: c.border),
+        borderRadius: BorderRadius.circular(AppRadius.button),
+      ),
+      child: Text(
+        _label(),
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: c.textPrimary,
+              fontWeight: FontWeight.w600,
+            ),
+      ),
+    );
+  }
 }
 
 class _RankedNgoTile extends StatelessWidget {
@@ -9154,7 +9875,8 @@ class LogisticsStatusBadge extends StatelessWidget {
 // =============================================================================
 
 class NgoDashboardScreen extends StatefulWidget {
-  const NgoDashboardScreen({super.key});
+  final int initialTab;
+  const NgoDashboardScreen({super.key, this.initialTab = 0});
   @override
   State<NgoDashboardScreen> createState() => _NgoDashboardScreenState();
 }
@@ -9185,6 +9907,7 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
   @override
   void initState() {
     super.initState();
+    _tab = widget.initialTab;
     _loadNearby();
     _loadClaims();
     _loadNgoOffers();
@@ -9502,22 +10225,12 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
           body: Center(
             child: Padding(
               padding: const EdgeInsets.all(AppSpacing.lg),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.cloud_off_outlined,
-                      size: 40, color: Theme.of(context).colorScheme.outline),
-                  const SizedBox(height: AppSpacing.md),
-                  Text(_error!,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 13)),
-                  const SizedBox(height: AppSpacing.md),
-                  TextButton.icon(
-                    onPressed: _loadNearby,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Retry'),
-                  ),
-                ],
+              child: EmptyState(
+                icon: Icons.cloud_off_outlined,
+                message: 'Could not load nearby donations.',
+                description: _error!,
+                actionLabel: 'Retry',
+                onAction: _loadNearby,
               ),
             ),
           ),
@@ -9628,7 +10341,6 @@ class _NgoOffersSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = AppColors.of(context);
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -9651,25 +10363,34 @@ class _NgoOffersSection extends StatelessWidget {
               ],
             ),
             if (loading)
-              const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(AppSpacing.md),
-                  child: CircularProgressIndicator(),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: AppSpacing.md),
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: AppSpacing.sm),
+                      Text('Loading ranked offers…'),
+                    ],
+                  ),
                 ),
               )
             else if (error != null)
-              Row(
-                children: [
-                  Expanded(
-                    child:
-                        Text(error!, style: TextStyle(color: c.textSecondary)),
-                  ),
-                  TextButton(onPressed: onRefresh, child: const Text('Retry')),
-                ],
+              EmptyState(
+                icon: Icons.cloud_off_outlined,
+                message: 'Offers are temporarily unavailable.',
+                description: error!,
+                actionLabel: 'Retry',
+                onAction: onRefresh,
               )
             else if (offers.isEmpty)
-              Text('No ranked donation offers are available yet.',
-                  style: TextStyle(color: c.textSecondary))
+              const EmptyState(
+                icon: Icons.inbox_outlined,
+                message: 'No ranked donation offers are available yet.',
+                description:
+                    'Eligible offers will appear here when a donation is matched to your organization.',
+              )
             else
               for (final offer in offers.take(5)) ...[
                 if (offer != offers.first) const Divider(height: 20),
@@ -9737,54 +10458,95 @@ class _NgoOfferTile extends StatelessWidget {
         deadline != null && DateTime.now().isBefore(deadline!);
     final canRespond = isPending && isBeforeDeadline && id.isNotEmpty;
     final scoreLabel = matchScoreLabel(score is num ? score : null);
+    final statusColor = switch (status) {
+      'accepted' => c.green,
+      'declined' || 'expired' => c.textSecondary,
+      'pending' => c.bluePrimary,
+      _ => c.warning,
+    };
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(foodName,
-            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
-        const SizedBox(height: 4),
-        if (category != null && category.isNotEmpty)
-          Text(category, style: TextStyle(color: c.textSecondary)),
-        if (quantity is num)
-          Text(
-            '${quantity.toStringAsFixed(quantity % 1 == 0 ? 0 : 1)}'
-            '${unit == null || unit.isEmpty ? '' : ' $unit'}',
-            style: TextStyle(color: c.textSecondary),
-          ),
-        if (address != null && address.isNotEmpty)
-          Text('Pickup: $address', style: TextStyle(color: c.textSecondary))
-        else
-          Text('Pickup address unavailable',
-              style: TextStyle(color: c.textSecondary)),
-        const SizedBox(height: 5),
-        Wrap(
-          spacing: 12,
-          runSpacing: 4,
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(scoreLabel,
-                style: TextStyle(
-                    color: c.bluePrimary, fontWeight: FontWeight.w700)),
-            Text(
-              matchingDistanceLabel(
+            Expanded(
+              child: Text(foodName,
+                  style: Theme.of(context).textTheme.titleMedium),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            StatusChip(
+              label: 'Offer ${status.replaceAll('_', ' ')}',
+              color: statusColor,
+            ),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Wrap(
+          spacing: AppSpacing.sm,
+          runSpacing: AppSpacing.sm,
+          children: [
+            if (category != null && category.isNotEmpty)
+              _OfferFactChip(label: category),
+            if (quantity is num)
+              _OfferFactChip(
+                label: '${quantity.toStringAsFixed(quantity % 1 == 0 ? 0 : 1)}'
+                    '${unit == null || unit.isEmpty ? '' : ' $unit'}',
+              ),
+            _OfferFactChip(label: scoreLabel, emphasized: true),
+            _OfferFactChip(
+              label: matchingDistanceLabel(
                 scoreDetails['distance_km'] is num
                     ? scoreDetails['distance_km'] as num
                     : null,
                 scoreDetails['distance_source'],
               ),
-              style: TextStyle(color: c.textSecondary),
             ),
-            Text('Rank #${offer['candidate_rank'] ?? '—'}',
-                style: TextStyle(color: c.textSecondary)),
-            Text(
-              isPending && deadline == null
-                  ? 'Offer deadline unavailable'
-                  : isPending && !isBeforeDeadline
-                      ? 'Offer deadline passed'
-                      : isPending
-                          ? 'Respond by ${deadlineLabel ?? 'deadline unavailable'}'
-                          : 'Offer ${status.replaceAll('_', ' ')}',
-              style: TextStyle(color: c.textSecondary),
+            _OfferFactChip(label: 'Rank #${offer['candidate_rank'] ?? '—'}'),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(AppSpacing.sm),
+          decoration: BoxDecoration(
+            color: c.surfaceAlt,
+            borderRadius: BorderRadius.circular(AppRadius.button),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.location_on_outlined, size: 18, color: c.bluePrimary),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Text(
+                  address == null || address.isEmpty
+                      ? 'Pickup address unavailable'
+                      : 'Pickup: $address',
+                  style: TextStyle(color: c.textSecondary),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.schedule_outlined, size: 17, color: c.textSecondary),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: Text(
+                isPending && deadline == null
+                    ? 'Offer deadline unavailable'
+                    : isPending && !isBeforeDeadline
+                        ? 'Offer deadline passed'
+                        : isPending
+                            ? 'Respond by ${deadlineLabel ?? 'deadline unavailable'}'
+                            : 'Offer ${status.replaceAll('_', ' ')}',
+                style: TextStyle(color: c.textSecondary),
+              ),
             ),
           ],
         ),
@@ -9818,6 +10580,38 @@ class _NgoOfferTile extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+class _OfferFactChip extends StatelessWidget {
+  const _OfferFactChip({required this.label, this.emphasized = false});
+
+  final String label;
+  final bool emphasized;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AppColors.of(context);
+    final color = emphasized ? c.bluePrimary : c.textSecondary;
+    return Container(
+      constraints: const BoxConstraints(minHeight: 32),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: emphasized ? c.bluePrimary.withValues(alpha: 0.08) : c.surface,
+        border: Border.all(
+            color:
+                emphasized ? c.bluePrimary.withValues(alpha: 0.2) : c.border),
+        borderRadius: BorderRadius.circular(AppRadius.chip),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight: emphasized ? FontWeight.w700 : FontWeight.w500,
+        ),
+      ),
     );
   }
 }
@@ -10161,16 +10955,15 @@ class _NgoClaimsTab extends StatelessWidget {
           ? const Center(child: CircularProgressIndicator())
           : error != null
               ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(error!),
-                      const SizedBox(height: 12),
-                      SecondaryButton(
-                          label: 'RETRY',
-                          icon: Icons.refresh,
-                          onPressed: onRetry),
-                    ],
+                  child: Padding(
+                    padding: const EdgeInsets.all(AppSpacing.lg),
+                    child: EmptyState(
+                      icon: Icons.cloud_off_outlined,
+                      message: 'Could not load your claims.',
+                      description: error!,
+                      actionLabel: 'Retry',
+                      onAction: onRetry,
+                    ),
                   ),
                 )
               : claimed.isEmpty
@@ -10201,10 +10994,7 @@ class _NgoClaimsTab extends StatelessWidget {
   }
 }
 
-/// A center-aligned presentation of a claimed donation, used only in My
-/// Claims. Kept as its own widget (rather than editing the shared
-/// DonationCard) so Provider's My Donations and NGO's Find Food screens
-/// are completely unaffected.
+/// A compact claimed-donation summary used only in My Claims.
 class _ClaimSummaryCard extends StatelessWidget {
   final Donation donation;
   final VoidCallback onTap;
@@ -10223,19 +11013,19 @@ class _ClaimSummaryCard extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(AppSpacing.md),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(donation.foodName,
-                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 6),
+              const SizedBox(height: AppSpacing.sm),
               StatusChip(
                   label: donationStatusLabel(donation.status),
                   color: donationStatusColor(donation.status, context)),
-              const SizedBox(height: 6),
+              const Divider(height: AppSpacing.lg),
               if (donation.providerName.isNotEmpty)
                 Text(donation.providerName,
-                    textAlign: TextAlign.center,
                     style: TextStyle(color: c.textSecondary, fontSize: 12.5)),
               ReadableAddressText(
                 address: donation.providerAddress,
@@ -10243,19 +11033,18 @@ class _ClaimSummaryCard extends StatelessWidget {
                 longitude: donation.longitude,
                 style: TextStyle(color: c.textSecondary, fontSize: 12),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: AppSpacing.sm),
               Wrap(
-                alignment: WrapAlignment.center,
-                spacing: 14,
-                runSpacing: 6,
+                spacing: AppSpacing.sm,
+                runSpacing: AppSpacing.sm,
                 children: [
                   _mini(context, Icons.scale_outlined,
                       '${donation.quantityKg.toStringAsFixed(0)} kg • ${donation.servings} servings'),
                   _mini(context, Icons.schedule_outlined, donation.expiryLabel),
                 ],
               ),
-              const SizedBox(height: 10),
-              Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              const Divider(height: AppSpacing.lg),
+              Row(children: [
                 Icon(Icons.chevron_right, size: 16, color: c.textSecondary),
                 Text('View claim details',
                     style: TextStyle(fontSize: 12, color: c.textSecondary)),
@@ -10269,11 +11058,25 @@ class _ClaimSummaryCard extends StatelessWidget {
 
   Widget _mini(BuildContext context, IconData icon, String text) {
     final c = AppColors.of(context);
-    return Row(mainAxisSize: MainAxisSize.min, children: [
-      Icon(icon, size: 14, color: c.textSecondary),
-      const SizedBox(width: 4),
-      Text(text, style: TextStyle(fontSize: 12, color: c.textSecondary)),
-    ]);
+    return Container(
+      constraints: const BoxConstraints(minHeight: 34),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: c.surfaceAlt,
+        borderRadius: BorderRadius.circular(AppRadius.button),
+        border: Border.all(color: c.border),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 14, color: c.bluePrimary),
+        const SizedBox(width: AppSpacing.xs),
+        Flexible(
+          child: Text(
+            text,
+            style: TextStyle(fontSize: 12, color: c.textSecondary),
+          ),
+        ),
+      ]),
+    );
   }
 }
 
@@ -10340,53 +11143,94 @@ class DonationDetailScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(children: [
-              Expanded(
-                  child: Text(donation.foodName,
-                      style: Theme.of(context).textTheme.headlineSmall)),
-              StatusChip(
+            Text(donation.foodName,
+                style: Theme.of(context).textTheme.headlineSmall),
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: StatusChip(
                   label: donationStatusLabel(donation.status),
                   color: donationStatusColor(donation.status, context)),
-            ]),
-            const SizedBox(height: 4),
+            ),
             if (donation.providerName.isNotEmpty)
-              Text(donation.providerName,
-                  style: TextStyle(color: c.textSecondary)),
+              Padding(
+                padding: const EdgeInsets.only(top: AppSpacing.sm),
+                child: Text(donation.providerName,
+                    style: TextStyle(
+                        color: c.textSecondary, fontWeight: FontWeight.w600)),
+              ),
             const SizedBox(height: AppSpacing.lg),
-            SahaayGoogleMap(
-              height: 140,
-              latitude: donation.latitude,
-              longitude: donation.longitude,
-              markerTitle: donation.foodName,
-              markerSnippet:
-                  readableAddressOrUnavailable(donation.providerAddress),
-              onMarkerInfoWindowTap: _openGoogleMaps,
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Pickup location',
+                        style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: AppSpacing.sm),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(AppRadius.button),
+                      child: SahaayGoogleMap(
+                        height: 140,
+                        latitude: donation.latitude,
+                        longitude: donation.longitude,
+                        markerTitle: donation.foodName,
+                        markerSnippet: readableAddressOrUnavailable(
+                            donation.providerAddress),
+                        onMarkerInfoWindowTap: _openGoogleMaps,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: AppSpacing.lg),
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(AppSpacing.md),
-                child: Column(children: [
-                  _detailRow(context, Icons.category_outlined, 'Category',
-                      donation.category),
-                  _detailRow(context, Icons.scale_outlined, 'Quantity',
-                      '${donation.quantityKg.toStringAsFixed(0)} kg'),
-                  _detailRow(context, Icons.groups_outlined, 'Servings',
-                      '${donation.servings}'),
-                  _detailRow(
-                    context,
-                    Icons.near_me_outlined,
-                    'Distance',
-                    straightLineDistanceLabel(donation.distanceKm) ??
-                        'Distance unavailable',
-                  ),
-                  if (donation.expiryLabel.isNotEmpty)
-                    _detailRow(context, Icons.schedule_outlined, 'Deadline',
-                        donation.expiryLabel),
-                  _detailRow(context, Icons.eco_outlined, 'Freshness',
-                      donation.freshnessLabel),
-                  _readableAddressRow(context, donation),
-                ]),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Donation summary',
+                        style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: AppSpacing.xs),
+                    _detailRow(context, Icons.category_outlined, 'Category',
+                        donation.category),
+                    _detailRow(context, Icons.scale_outlined, 'Quantity',
+                        '${donation.quantityKg.toStringAsFixed(0)} kg'),
+                    _detailRow(context, Icons.groups_outlined, 'Servings',
+                        '${donation.servings}'),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.md),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Pickup details',
+                        style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: AppSpacing.xs),
+                    _detailRow(
+                      context,
+                      Icons.near_me_outlined,
+                      'Distance',
+                      straightLineDistanceLabel(donation.distanceKm) ??
+                          'Distance unavailable',
+                    ),
+                    if (donation.expiryLabel.isNotEmpty)
+                      _detailRow(context, Icons.schedule_outlined, 'Deadline',
+                          donation.expiryLabel),
+                    _detailRow(context, Icons.eco_outlined, 'Freshness',
+                        donation.freshnessLabel),
+                    const Divider(height: AppSpacing.lg),
+                    _readableAddressRow(context, donation),
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: AppSpacing.lg),
@@ -10430,12 +11274,23 @@ class DonationDetailScreen extends StatelessWidget {
       BuildContext context, IconData icon, String label, String value) {
     final c = AppColors.of(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(children: [
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Icon(icon, size: 18, color: c.textSecondary),
-        const SizedBox(width: 10),
-        Expanded(child: Text(label, style: TextStyle(color: c.textSecondary))),
-        Text(value, style: const TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(
+          flex: 2,
+          child: Text(label, style: TextStyle(color: c.textSecondary)),
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(
+          flex: 3,
+          child: Text(
+            value,
+            textAlign: TextAlign.end,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ),
       ]),
     );
   }
@@ -10443,13 +11298,15 @@ class DonationDetailScreen extends StatelessWidget {
   Widget _readableAddressRow(BuildContext context, Donation donation) {
     final c = AppColors.of(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
       child: Row(children: [
         Icon(Icons.location_on_outlined, size: 18, color: c.textSecondary),
-        const SizedBox(width: 10),
+        const SizedBox(width: AppSpacing.sm),
         Expanded(
-            child: Text('Pickup Address',
-                style: TextStyle(color: c.textSecondary))),
+          child:
+              Text('Pickup Address', style: TextStyle(color: c.textSecondary)),
+        ),
+        const SizedBox(width: AppSpacing.sm),
         Expanded(
           flex: 2,
           child: ReadableAddressText(
@@ -11015,7 +11872,8 @@ class _ClaimedDonationDashboardState extends State<ClaimedDonationDashboard> {
 // =============================================================================
 
 class VolunteerDashboardScreen extends StatefulWidget {
-  const VolunteerDashboardScreen({super.key});
+  final int initialTab;
+  const VolunteerDashboardScreen({super.key, this.initialTab = 0});
   @override
   State<VolunteerDashboardScreen> createState() =>
       _VolunteerDashboardScreenState();
@@ -11036,6 +11894,7 @@ class _VolunteerDashboardScreenState extends State<VolunteerDashboardScreen> {
   @override
   void initState() {
     super.initState();
+    _tab = widget.initialTab;
     _loadProfileCompletion();
     _loadDeliveries();
     _refreshTimer = Timer.periodic(
@@ -11170,22 +12029,12 @@ class _VolunteerDashboardScreenState extends State<VolunteerDashboardScreen> {
           body: Center(
             child: Padding(
               padding: const EdgeInsets.all(AppSpacing.lg),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.cloud_off_outlined,
-                      size: 40, color: Theme.of(context).colorScheme.outline),
-                  const SizedBox(height: AppSpacing.md),
-                  Text(_error!,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 13)),
-                  const SizedBox(height: AppSpacing.md),
-                  TextButton.icon(
-                    onPressed: _loadDeliveries,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Retry'),
-                  ),
-                ],
+              child: EmptyState(
+                icon: Icons.cloud_off_outlined,
+                message: 'Could not load deliveries.',
+                description: _error!,
+                actionLabel: 'Retry',
+                onAction: _loadDeliveries,
               ),
             ),
           ),
@@ -11481,20 +12330,12 @@ class _TransportTaskCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (task.foodImageUrl?.isNotEmpty == true)
-              ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: Image.network(
-                  task.foodImageUrl!,
-                  width: double.infinity,
-                  height: 170,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => const SizedBox(
-                    height: 72,
-                    child: Center(child: Text('Donation photo unavailable')),
-                  ),
-                ),
-              ),
+            _AppImageFrame(
+              imageUrl: task.foodImageUrl,
+              height: 170,
+              fallbackLabel: 'Donation photo unavailable',
+              semanticLabel: 'Donation photo',
+            ),
             Row(children: [
               Expanded(
                 child: Text(
@@ -11507,7 +12348,9 @@ class _TransportTaskCard extends StatelessWidget {
                 compact: true,
               ),
             ]),
-            const SizedBox(height: 10),
+            const Divider(height: AppSpacing.lg),
+            const SectionHeader(title: 'Donation details'),
+            const SizedBox(height: AppSpacing.sm),
             _TransportFact(
               icon: Icons.scale_outlined,
               label: quantity ?? 'Quantity not recorded',
@@ -11553,18 +12396,18 @@ class _TransportTaskCard extends StatelessWidget {
               label:
                   'Donation status: ${task.donationStatus ?? 'Not available'} • Claim status: ${task.claimStatus ?? 'Not available'}',
             ),
-            const SizedBox(height: 6),
+            const Divider(height: AppSpacing.lg),
+            const SectionHeader(title: 'Pickup and delivery'),
+            const SizedBox(height: AppSpacing.sm),
             _TransportFact(
               icon: Icons.storefront_outlined,
               label: task.providerName ?? 'Provider not recorded',
             ),
-            const SizedBox(height: 6),
             _TransportFact(
               icon: Icons.my_location_outlined,
               label:
                   'Pickup: ${readableAddressOrUnavailable(task.providerAddress ?? task.pickupAddress)}',
             ),
-            const SizedBox(height: 6),
             _TransportFact(
               icon: Icons.volunteer_activism_outlined,
               label: task.ngoName == null
@@ -11576,7 +12419,6 @@ class _TransportTaskCard extends StatelessWidget {
               label:
                   'Drop-off: ${readableAddressOrUnavailable(task.ngoAddress ?? task.deliveryAddress)}',
             ),
-            const SizedBox(height: 6),
             _TransportFact(
               icon: Icons.schedule_outlined,
               label: deadline == null
@@ -11591,6 +12433,9 @@ class _TransportTaskCard extends StatelessWidget {
                 onMarkerInfoWindowTap: _openGoogleMaps,
               ),
             ],
+            const Divider(height: AppSpacing.lg),
+            const SectionHeader(title: 'Contact details'),
+            const SizedBox(height: AppSpacing.sm),
             Wrap(
               spacing: 8,
               children: [
@@ -11648,7 +12493,10 @@ class _TransportFact extends StatelessWidget {
         Expanded(
           child: Text(
             label,
-            style: TextStyle(fontSize: 12, color: c.textSecondary),
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: c.textSecondary),
           ),
         ),
       ],
@@ -11824,15 +12672,35 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
                 transportCoordination: o.coordination,
               )
             else ...[
-              Text('${o.quantityKg.toStringAsFixed(0)} kg ${o.foodName}',
-                  style: Theme.of(context).textTheme.headlineSmall),
-              const SizedBox(height: 6),
-              StatusChip(
-                  label: deliveryStatusLabel(o.status), color: c.bluePrimary),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(AppSpacing.md),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${o.quantityKg.toStringAsFixed(0)} kg ${o.foodName}',
+                        style: Theme.of(context).textTheme.headlineSmall,
+                      ),
+                      const SizedBox(height: AppSpacing.sm),
+                      StatusChip(
+                        label: deliveryStatusLabel(o.status),
+                        color: c.bluePrimary,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
               const SizedBox(height: AppSpacing.lg),
               if (_refreshError != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: AppSpacing.md),
+                Container(
+                  margin: const EdgeInsets.only(bottom: AppSpacing.md),
+                  padding: const EdgeInsets.all(AppSpacing.md),
+                  decoration: BoxDecoration(
+                    color: c.danger.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(AppRadius.button),
+                    border: Border.all(color: c.danger.withValues(alpha: 0.3)),
+                  ),
                   child: Text(
                     _refreshError!,
                     style: TextStyle(color: c.danger),
@@ -11919,16 +12787,30 @@ class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
   Widget _row(BuildContext context, IconData icon, String label, String value) {
     final c = AppColors.of(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(children: [
-        Icon(icon, size: 18, color: c.textSecondary),
-        const SizedBox(width: 10),
-        Expanded(child: Text(label, style: TextStyle(color: c.textSecondary))),
-        Flexible(
-            child: Text(value,
-                style: const TextStyle(fontWeight: FontWeight.w700),
-                textAlign: TextAlign.right)),
-      ]),
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: c.textSecondary),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            flex: 2,
+            child: Text(label, style: TextStyle(color: c.textSecondary)),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            flex: 3,
+            child: Text(
+              value,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: c.textPrimary,
+                    fontWeight: FontWeight.w600,
+                  ),
+              textAlign: TextAlign.end,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -11977,9 +12859,12 @@ class _VolunteerDeliveriesTab extends StatelessWidget {
           title: const Text('My Deliveries'),
           actions: const [ThemeToggleButton()]),
       body: myDeliveries.isEmpty
-          ? const EmptyState(
-              icon: Icons.local_shipping_outlined,
-              message: 'No accepted deliveries yet.')
+          ? const Center(
+              child: EmptyState(
+                icon: Icons.local_shipping_outlined,
+                message: 'No accepted deliveries yet.',
+              ),
+            )
           : ListView.separated(
               padding: const EdgeInsets.all(AppSpacing.lg),
               itemCount: myDeliveries.length,
@@ -11987,16 +12872,71 @@ class _VolunteerDeliveriesTab extends StatelessWidget {
               itemBuilder: (context, i) {
                 final o = myDeliveries[i];
                 return Card(
-                  child: ListTile(
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(AppRadius.card),
                     onTap: () => Navigator.of(context).push(MaterialPageRoute(
                         builder: (_) => DeliveryDetailScreen(
                             opportunity: o, onAccept: (_) {}))),
-                    title: Text(
-                        '${o.foodName} — ${o.quantityKg.toStringAsFixed(0)} kg'),
-                    subtitle: Text('${o.providerName} → ${o.ngoName}'),
-                    trailing: StatusChip(
-                        label: deliveryStatusLabel(o.status),
-                        color: AppColors.of(context).bluePrimary),
+                    child: Padding(
+                      padding: const EdgeInsets.all(AppSpacing.md),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                width: 40,
+                                height: 40,
+                                decoration: BoxDecoration(
+                                  color: AppColors.of(context)
+                                      .bluePrimary
+                                      .withValues(alpha: 0.08),
+                                  borderRadius:
+                                      BorderRadius.circular(AppRadius.button),
+                                ),
+                                child: Icon(
+                                  Icons.local_shipping_outlined,
+                                  color: AppColors.of(context).bluePrimary,
+                                ),
+                              ),
+                              const SizedBox(width: AppSpacing.md),
+                              Expanded(
+                                child: Text(
+                                  '${o.foodName} — ${o.quantityKg.toStringAsFixed(0)} kg',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style:
+                                      Theme.of(context).textTheme.titleMedium,
+                                ),
+                              ),
+                              const SizedBox(width: AppSpacing.sm),
+                              Icon(Icons.chevron_right,
+                                  color: AppColors.of(context).textSecondary),
+                            ],
+                          ),
+                          const SizedBox(height: AppSpacing.md),
+                          Wrap(
+                            spacing: AppSpacing.sm,
+                            runSpacing: AppSpacing.sm,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              StatusChip(
+                                label: deliveryStatusLabel(o.status),
+                                color: AppColors.of(context).bluePrimary,
+                              ),
+                              Text(
+                                '${o.providerName} → ${o.ngoName}',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.bodyMedium,
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 );
               },
@@ -13129,13 +14069,15 @@ class NotificationsScreen extends StatefulWidget {
   State<NotificationsScreen> createState() => _NotificationsScreenState();
 }
 
-class _NotificationsScreenState extends State<NotificationsScreen> {
-  // Backend notifications loaded once. When the backend has none (it never
-  // writes notifications yet), the session-based local ones are shown as a
-  // fallback so the user still sees what their own actions triggered.
+class _NotificationsScreenState extends State<NotificationsScreen>
+    with WidgetsBindingObserver {
+  // Persisted records are authoritative; session notifications are only a
+  // fallback when the backend is reachable and has no records.
   List<AppNotificationItem>? _serverItems;
   bool _loading = true;
   bool _failed = false;
+  AppState? _observedAppState;
+  AppNotificationItem? _lastSessionNotification;
 
   /// Null means "not evaluated yet" (or dismissed), which hides the banner.
   PermissionOutcome? _notificationOutcome;
@@ -13147,8 +14089,45 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
     _checkNotificationPermission();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final state = context.read<AppState>();
+    if (!identical(_observedAppState, state)) {
+      _observedAppState?.removeListener(_onAppStateChanged);
+      _observedAppState = state;
+      _lastSessionNotification =
+          state.notifications.isEmpty ? null : state.notifications.first;
+      state.addListener(_onAppStateChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _observedAppState?.removeListener(_onAppStateChanged);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _load();
+  }
+
+  void _onAppStateChanged() {
+    final state = _observedAppState;
+    if (state == null) return;
+    final latest =
+        state.notifications.isEmpty ? null : state.notifications.first;
+    if (latest != null && !identical(latest, _lastSessionNotification)) {
+      _lastSessionNotification = latest;
+      _load();
+    }
   }
 
   /// Reads the current permission state WITHOUT prompting. The OS dialog is
@@ -13255,6 +14234,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     await _markRead(item);
     final donationId = item.relatedDonationId;
     if (donationId == null || donationId.isEmpty || !mounted) return;
+    final navigator = Navigator.of(context);
     try {
       final api = context.read<AppState>().api;
       final rawClaims = widget.role == UserRole.provider
@@ -13262,6 +14242,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           : widget.role == UserRole.ngo
               ? await api.getClaims()
               : const <dynamic>[];
+      if (!mounted) return;
       for (final raw in rawClaims) {
         if (raw is! Map || raw['donation_id']?.toString() != donationId) {
           continue;
@@ -13277,8 +14258,42 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           donation: donation,
           viewerRole: widget.role,
         );
-        await Navigator.of(context).push(
+        await navigator.push(
           MaterialPageRoute<void>(builder: (_) => page),
+        );
+        return;
+      }
+      if (widget.role == UserRole.provider) {
+        final rawDonations = await api.getDonations();
+        if (!mounted) return;
+        for (final raw in rawDonations) {
+          if (raw is! Map || raw['id']?.toString() != donationId) continue;
+          final donation = Donation.fromBackend(
+            Map<String, dynamic>.from(raw),
+            includePrivateContacts: true,
+          );
+          await navigator.push(
+            MaterialPageRoute<void>(
+              builder: (_) =>
+                  ProviderDonationMatchDetailsScreen(donation: donation),
+            ),
+          );
+          return;
+        }
+      } else if (widget.role == UserRole.ngo &&
+          item.category == NotificationCategory.donation) {
+        await navigator.push(
+          MaterialPageRoute<void>(
+            builder: (_) => const NgoDashboardScreen(initialTab: 1),
+          ),
+        );
+        return;
+      } else if (widget.role == UserRole.volunteer &&
+          item.category == NotificationCategory.volunteer) {
+        await navigator.push(
+          MaterialPageRoute<void>(
+            builder: (_) => const VolunteerDashboardScreen(initialTab: 1),
+          ),
         );
         return;
       }
@@ -13304,60 +14319,68 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-    final List<AppNotificationItem> items;
-    if (_loading) {
-      items = const [];
-    } else if (_serverItems != null && _serverItems!.isNotEmpty) {
-      items = _serverItems!;
-    } else {
-      items = List.of(state.notifications);
-    }
+    final items = _serverItems ??
+        (_failed ? <AppNotificationItem>[] : List.of(state.notifications));
 
     Widget body;
     if (_loading) {
-      body = const Center(child: CircularProgressIndicator());
+      body = const Center(
+        key: ValueKey('notifications-loading'),
+        child: CircularProgressIndicator(),
+      );
     } else if (items.isEmpty) {
       body = Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              _failed
-                  ? Icons.cloud_off_outlined
-                  : Icons.notifications_none_outlined,
-              size: 40,
-              color: Theme.of(context).colorScheme.outline,
-            ),
-            const SizedBox(height: 10),
-            Text(
-              _failed
-                  ? 'Could not load notifications.'
-                  : 'No notifications yet.',
-              style: const TextStyle(color: Colors.grey),
-              textAlign: TextAlign.center,
-            ),
-            if (_failed) ...[
-              const SizedBox(height: 8),
-              TextButton.icon(
-                onPressed: _load,
-                icon: const Icon(Icons.refresh, size: 18),
-                label: const Text('Retry'),
-              ),
-            ],
-          ],
+        key: const ValueKey('notifications-empty'),
+        child: EmptyState(
+          icon: _failed
+              ? Icons.cloud_off_outlined
+              : Icons.notifications_none_outlined,
+          message: _failed
+              ? 'Could not load notifications.'
+              : 'No notifications yet.',
+          description: _failed
+              ? 'Check your connection and try again.'
+              : 'New updates about donations, matches, and deliveries will appear here.',
+          actionLabel: _failed ? 'Retry' : null,
+          onAction: _failed ? _load : null,
         ),
       );
     } else {
-      body = ListView.separated(
-        padding: const EdgeInsets.all(AppSpacing.lg),
-        itemCount: items.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 10),
-        itemBuilder: (context, i) => NotificationTile(
-          item: items[i],
-          onTap: () => _openNotification(items[i]),
+      final list = RefreshIndicator(
+        onRefresh: _load,
+        child: ListView.separated(
+          key: const ValueKey('notifications-list'),
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          itemCount: items.length,
+          separatorBuilder: (_, __) => const SizedBox(height: AppSpacing.sm),
+          itemBuilder: (context, i) => NotificationTile(
+            item: items[i],
+            onTap: () => _openNotification(items[i]),
+          ),
         ),
       );
+      body = _failed
+          ? Column(
+              children: [
+                MaterialBanner(
+                  content: const Text(
+                      'Could not refresh notifications. Showing saved updates.'),
+                  actions: [
+                    TextButton(onPressed: _load, child: const Text('Retry')),
+                  ],
+                ),
+                Expanded(child: list),
+              ],
+            )
+          : list;
     }
+    body = AnimatedSwitcher(
+      duration: const Duration(milliseconds: 180),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      child: body,
+    );
 
     // Permission is offered here, inside the notification flow the user
     // deliberately opened, never on the splash screen. It is a dismissible
@@ -13377,17 +14400,24 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               Expanded(child: body),
             ],
           );
+    final refreshAction = IconButton(
+      tooltip: 'Refresh notifications',
+      onPressed: _loading ? null : _load,
+      icon: const Icon(Icons.refresh),
+    );
 
     if (widget.embedded) {
       return Scaffold(
           appBar: AppBar(
               title: const Text('Notifications'),
               automaticallyImplyLeading: false,
-              actions: const [ThemeToggleButton()]),
+              actions: [refreshAction, const ThemeToggleButton()]),
           body: withBanner);
     }
     return Scaffold(
-        appBar: AppBar(title: const Text('Notifications')), body: withBanner);
+        appBar: AppBar(
+            title: const Text('Notifications'), actions: [refreshAction]),
+        body: withBanner);
   }
 }
 
@@ -13509,28 +14539,45 @@ class ProfileTab extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.lg),
         children: [
+          const SectionHeader(title: 'Your account'),
+          const SizedBox(height: AppSpacing.sm),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(AppSpacing.md),
-              child: Row(children: [
-                SahaayAvatar(
-                    radius: 28,
-                    imageUrl: imageUrl,
-                    fallbackText: name.isNotEmpty ? name : '?',
-                    backgroundColor: c.bluePrimary.withOpacity(0.12),
-                    foregroundColor: c.bluePrimary),
-                const SizedBox(width: AppSpacing.md),
-                Expanded(
-                  child: Column(
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: c.border),
+                    ),
+                    child: SahaayAvatar(
+                      radius: 30,
+                      imageUrl: imageUrl,
+                      fallbackText: name.isNotEmpty ? name : '?',
+                      backgroundColor: c.bluePrimary.withOpacity(0.12),
+                      foregroundColor: c.bluePrimary,
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.md),
+                  Expanded(
+                    child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(name,
-                            style: Theme.of(context).textTheme.titleLarge),
-                        const SizedBox(height: 4),
+                        Text(
+                          name.isEmpty ? 'SAHAAY member' : name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                        const SizedBox(height: AppSpacing.xs),
                         StatusChip(label: _roleLabel, color: c.bluePrimary),
-                      ]),
-                ),
-              ]),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
           if (completion != null && shouldShowProfileProgress(completion)) ...[
@@ -13541,6 +14588,8 @@ class ProfileTab extends StatelessWidget {
             ),
           ],
           const SizedBox(height: AppSpacing.lg),
+          const SectionHeader(title: 'Account and support'),
+          const SizedBox(height: AppSpacing.sm),
           Card(
             child: Column(children: [
               ListTile(
@@ -13667,7 +14716,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.all(AppSpacing.lg),
         children: [
           const SectionHeader(title: 'Account'),
-          const SizedBox(height: 10),
+          const SizedBox(height: AppSpacing.sm),
           Card(
             child: Column(children: [
               ListTile(
@@ -13705,7 +14754,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: AppSpacing.lg),
           const SectionHeader(title: 'Notification Preferences'),
-          const SizedBox(height: 10),
+          const SizedBox(height: AppSpacing.sm),
           Card(
             child: Column(children: [
               SwitchListTile(
@@ -13732,7 +14781,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: AppSpacing.lg),
           const SectionHeader(title: 'Privacy'),
-          const SizedBox(height: 10),
+          const SizedBox(height: AppSpacing.sm),
           Card(
             child: SwitchListTile(
               secondary: const Icon(Icons.leaderboard_outlined),
@@ -13746,7 +14795,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: AppSpacing.lg),
           const SectionHeader(title: 'App Preferences'),
-          const SizedBox(height: 10),
+          const SizedBox(height: AppSpacing.sm),
           Card(
             child: Column(children: [
               SwitchListTile(
@@ -13792,6 +14841,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
   final _phone = TextEditingController();
+  final _phoneVerificationCode = TextEditingController();
   final _organization = TextEditingController();
   final _address = TextEditingController();
   final _city = TextEditingController();
@@ -13810,6 +14860,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   final Set<String> _ngoDietaryPreferences = {};
   bool? _ngoVehicleAvailable;
   bool _ngoVehicleChanged = false;
+  bool _phoneAuthConfigured = false;
+  bool _phoneVerified = false;
+  bool _phoneVerificationBusy = false;
+  String? _phoneVerificationId;
+  int? _phoneResendToken;
 
   // The signed-in organization's real coordinates. Null until a location was
   // actually stored or picked — never invented.
@@ -13826,6 +14881,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   void dispose() {
     _name.dispose();
     _phone.dispose();
+    _phoneVerificationCode.dispose();
     _organization.dispose();
     _address.dispose();
     _city.dispose();
@@ -13881,6 +14937,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         _photoUrl = profile['profile_image_url']?.toString();
         _loading = false;
       });
+      await _loadPhoneVerificationStatus();
     } on ApiException catch (error) {
       if (!mounted) return;
       setState(() {
@@ -13895,6 +14952,154 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         _loading = false;
       });
     }
+  }
+
+  Future<void> _loadPhoneVerificationStatus() async {
+    try {
+      final status =
+          await context.read<AppState>().api.getContactVerification();
+      if (!mounted) return;
+      setState(() {
+        _phoneAuthConfigured = status['phone_auth_configured'] == true;
+        _phoneVerified = status['phone_verified'] == true;
+      });
+    } on ApiException catch (error) {
+      debugPrint(
+          'Contact verification status unavailable http_status=${error.statusCode}');
+    } on Exception catch (error) {
+      debugPrint(
+          'Contact verification status unavailable error_type=${error.runtimeType}');
+    }
+  }
+
+  Future<void> _startPhoneVerification() async {
+    final appState = context.read<AppState>();
+    final linkedPhone = appState.authService.currentFirebasePhoneNumber;
+    if (linkedPhone != null && linkedPhone.isNotEmpty) {
+      await _syncLinkedPhone(linkedPhone);
+      return;
+    }
+    final localNumber = normalizeIndianMobileNumber(_phone.text);
+    if (localNumber == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a valid mobile number first.')),
+      );
+      return;
+    }
+    final phoneNumber = '+91$localNumber';
+    setState(() => _phoneVerificationBusy = true);
+    try {
+      await appState.api.updateProfile({'phone': phoneNumber});
+      _phone.text = phoneNumber;
+      await appState.authService.startPhoneVerification(
+        phoneNumber: phoneNumber,
+        forceResendingToken: _phoneResendToken,
+        onCodeSent: (verificationId, resendToken) {
+          if (!mounted) return;
+          setState(() {
+            _phoneVerificationId = verificationId;
+            _phoneResendToken = resendToken;
+            _phoneVerificationBusy = false;
+          });
+        },
+        onVerified: (verifiedPhone) {
+          unawaited(_completePhoneVerification(verifiedPhone));
+        },
+        onFailure: _showPhoneVerificationError,
+        onTimeout: (verificationId) {
+          if (!mounted) return;
+          setState(() {
+            _phoneVerificationId = verificationId;
+            _phoneVerificationBusy = false;
+          });
+        },
+      );
+      if (mounted) setState(() => _phoneVerificationBusy = false);
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _phoneVerificationBusy = false);
+      _showPhoneVerificationError(error.message);
+    } on AuthException catch (error) {
+      if (!mounted) return;
+      setState(() => _phoneVerificationBusy = false);
+      _showPhoneVerificationError(error.message);
+    }
+  }
+
+  Future<void> _verifyPhoneCode() async {
+    final verificationId = _phoneVerificationId;
+    final firebaseUserId =
+        context.read<AppState>().authService.currentFirebaseUserId;
+    if (verificationId == null || firebaseUserId == null) {
+      _showPhoneVerificationError(
+          'Your sign-in session changed. Restart phone verification.');
+      return;
+    }
+    setState(() => _phoneVerificationBusy = true);
+    try {
+      final phone =
+          await context.read<AppState>().authService.verifyAndLinkPhoneCode(
+                verificationId: verificationId,
+                smsCode: _phoneVerificationCode.text,
+                expectedFirebaseUserId: firebaseUserId,
+              );
+      await _completePhoneVerification(phone);
+    } on AuthException catch (error) {
+      if (!mounted) return;
+      setState(() => _phoneVerificationBusy = false);
+      _showPhoneVerificationError(error.message);
+    }
+  }
+
+  Future<void> _syncLinkedPhone(String phoneNumber) async {
+    setState(() => _phoneVerificationBusy = true);
+    try {
+      await context.read<AppState>().authService.getIdToken(forceRefresh: true);
+      await _completePhoneVerification(phoneNumber);
+    } on AuthException catch (error) {
+      if (!mounted) return;
+      setState(() => _phoneVerificationBusy = false);
+      _showPhoneVerificationError(error.message);
+    }
+  }
+
+  Future<void> _completePhoneVerification(String phoneNumber) async {
+    try {
+      final api = context.read<AppState>().api;
+      await api.updateProfile({'phone': phoneNumber});
+      final status = await api.getContactVerification();
+      if (!mounted) return;
+      setState(() {
+        _phone.text = phoneNumber;
+        _phoneVerified = status['phone_verified'] == true;
+        _phoneAuthConfigured = status['phone_auth_configured'] == true;
+        _phoneVerificationBusy = false;
+        _phoneVerificationId = null;
+        _phoneVerificationCode.clear();
+      });
+      if (!_phoneVerified) {
+        _showPhoneVerificationError(
+            'Firebase did not confirm a phone matching your saved profile.');
+      }
+    } on ApiException catch (error) {
+      if (!mounted) return;
+      setState(() => _phoneVerificationBusy = false);
+      _showPhoneVerificationError(error.message);
+    } on Exception catch (error) {
+      if (!mounted) return;
+      setState(() => _phoneVerificationBusy = false);
+      debugPrint(
+          'Phone verification profile sync failed error_type=${error.runtimeType}');
+      _showPhoneVerificationError(
+          'Could not save the verified phone. Retry from your profile.');
+    }
+  }
+
+  void _showPhoneVerificationError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// Opens SAHAAY's one location picker, seeded with the stored location when
@@ -14002,9 +15207,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         payload['provider'] = values;
       }
     }
+    final appState = context.read<AppState>();
     try {
-      await context.read<AppState>().api.updateProfile(payload);
-      await context.read<AppState>().refreshProfile();
+      await appState.api.updateProfile(payload);
+      await appState.refreshProfile();
       if (mounted) Navigator.of(context).pop();
     } on ApiException catch (error) {
       if (!mounted) return;
@@ -14055,9 +15261,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final photo = _pendingPhoto;
     if (photo == null) return;
     setState(() => _saving = true);
+    final appState = context.read<AppState>();
     try {
-      final url = await context.read<AppState>().api.uploadProfilePhoto(photo);
-      await context.read<AppState>().refreshProfile();
+      final url = await appState.api.uploadProfilePhoto(photo);
+      await appState.refreshProfile();
       if (!mounted) return;
       setState(() {
         _photoUrl = url;
@@ -14109,6 +15316,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
+    final linkedFirebasePhone =
+        context.read<AppState>().authService.currentFirebasePhoneNumber;
     return Scaffold(
       resizeToAvoidBottomInset: true,
       appBar: AppBar(title: const Text('Edit Profile')),
@@ -14116,14 +15325,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? Center(
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    Padding(
-                      padding: const EdgeInsets.all(AppSpacing.lg),
-                      child: Text(_error!, textAlign: TextAlign.center),
+                  child: Padding(
+                    padding: const EdgeInsets.all(AppSpacing.lg),
+                    child: EmptyState(
+                      icon: Icons.cloud_off_outlined,
+                      message: _error!,
+                      actionLabel: 'Retry',
+                      onAction: _loadProfile,
                     ),
-                    TextButton(
-                        onPressed: _loadProfile, child: const Text('Retry')),
-                  ]),
+                  ),
                 )
               : SafeArea(
                   child: LayoutBuilder(
@@ -14136,254 +15346,334 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                           AppSpacing.lg,
                           AppSpacing.lg +
                               MediaQuery.viewInsetsOf(context).bottom),
-                      child: ConstrainedBox(
-                        constraints:
-                            BoxConstraints(minHeight: constraints.maxHeight),
-                        child: Form(
-                          key: _formKey,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              Center(
-                                child: CircleAvatar(
-                                  radius: 42,
-                                  backgroundColor: c.surfaceAlt,
-                                  backgroundImage: _pendingPhoto == null
-                                      ? null
-                                      : FileImage(_pendingPhoto!),
-                                  child: _pendingPhoto != null
-                                      ? null
-                                      : (_photoUrl == null || _photoUrl!.isEmpty
-                                          ? _avatarInitial()
-                                          : ClipOval(
-                                              child: Image.network(
-                                                _photoUrl!,
-                                                width: 84,
-                                                height: 84,
-                                                fit: BoxFit.cover,
-                                                errorBuilder: (_, __, ___) =>
-                                                    _avatarInitial(),
-                                              ),
-                                            )),
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: 620,
+                            minHeight: constraints.maxHeight,
+                          ),
+                          child: Form(
+                            key: _formKey,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                Center(
+                                  child: Container(
+                                    padding: const EdgeInsets.all(3),
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: c.border),
+                                      color: c.surface,
+                                    ),
+                                    child: CircleAvatar(
+                                      radius: 39,
+                                      backgroundColor: c.surfaceAlt,
+                                      backgroundImage: _pendingPhoto == null
+                                          ? null
+                                          : FileImage(_pendingPhoto!),
+                                      child: _pendingPhoto != null
+                                          ? null
+                                          : (_photoUrl == null ||
+                                                  _photoUrl!.isEmpty
+                                              ? _avatarInitial()
+                                              : ClipOval(
+                                                  child: Image.network(
+                                                    _photoUrl!,
+                                                    width: 78,
+                                                    height: 78,
+                                                    fit: BoxFit.cover,
+                                                    errorBuilder:
+                                                        (_, __, ___) =>
+                                                            _avatarInitial(),
+                                                  ),
+                                                )),
+                                    ),
+                                  ),
                                 ),
-                              ),
-                              if (_pendingPhoto != null) ...[
-                                const Center(
-                                    child: Text('Preview — not saved yet')),
+                                const SizedBox(height: AppSpacing.md),
+                                Center(
+                                  child: Text(
+                                    _organization.text.trim().isNotEmpty
+                                        ? _organization.text.trim()
+                                        : _name.text.trim(),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.center,
+                                    style:
+                                        Theme.of(context).textTheme.titleLarge,
+                                  ),
+                                ),
+                                const SizedBox(height: AppSpacing.sm),
+                                if (_pendingPhoto != null) ...[
+                                  const Center(
+                                      child: Text('Preview — not saved yet')),
+                                  OutlinedButton(
+                                    onPressed: _saving ? null : _uploadPhoto,
+                                    child: const Text('UPLOAD PHOTO'),
+                                  ),
+                                  TextButton(
+                                    onPressed: _saving
+                                        ? null
+                                        : () => setState(
+                                            () => _pendingPhoto = null),
+                                    child: const Text('Cancel'),
+                                  ),
+                                ],
                                 OutlinedButton(
-                                  onPressed: _saving ? null : _uploadPhoto,
-                                  child: const Text('UPLOAD PHOTO'),
+                                  onPressed: _saving ? null : _choosePhoto,
+                                  child: const Text('CHANGE PHOTO'),
                                 ),
-                                TextButton(
-                                  onPressed: _saving
-                                      ? null
-                                      : () =>
-                                          setState(() => _pendingPhoto = null),
-                                  child: const Text('Cancel'),
-                                ),
-                              ],
-                              OutlinedButton(
-                                onPressed: _saving ? null : _choosePhoto,
-                                child: const Text('CHANGE PHOTO'),
-                              ),
-                              const SizedBox(height: AppSpacing.md),
-                              _field(_name, 'Full name'),
-                              _field(_phone, 'Phone number',
-                                  keyboardType: TextInputType.phone),
-                              if (widget.role == UserRole.provider ||
-                                  widget.role == UserRole.ngo) ...[
-                                _field(_organization, 'Organization name'),
-                                _field(_address, 'Address', maxLines: 2),
-                                _field(_city, 'City'),
-                                if (widget.role == UserRole.ngo)
-                                  _field(_registration, 'Registration number'),
-                                if (widget.role == UserRole.ngo) ...[
+                                const SizedBox(height: AppSpacing.md),
+                                const SectionHeader(
+                                    title: 'Personal information'),
+                                const SizedBox(height: AppSpacing.sm),
+                                _field(_name, 'Full name'),
+                                _field(_phone, 'Phone number',
+                                    keyboardType: TextInputType.phone),
+                                if (_phoneAuthConfigured) ...[
                                   Text(
-                                    _latitude == null ||
-                                            _availableFrom == null ||
-                                            _availableTo == null ||
-                                            _maxDonationCapacityKg.text
-                                                .trim()
-                                                .isEmpty ||
-                                            _ngoFoodTypes.isEmpty ||
-                                            _ngoDietaryPreferences.isEmpty
-                                        ? 'Complete your profile details to appear in matching results.'
-                                        : 'Matching location, hours, food preferences, and capacity are set.',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall
-                                        ?.copyWith(
-                                          color: _latitude == null ||
-                                                  _availableFrom == null ||
-                                                  _availableTo == null ||
-                                                  _maxDonationCapacityKg.text
-                                                      .trim()
-                                                      .isEmpty ||
-                                                  _ngoFoodTypes.isEmpty ||
-                                                  _ngoDietaryPreferences.isEmpty
-                                              ? c.danger
-                                              : c.green,
-                                        ),
-                                  ),
-                                  const SizedBox(height: AppSpacing.md),
-                                  AppInputField(
-                                    label: 'Maximum donation amount (kg)',
-                                    controller: _maxDonationCapacityKg,
-                                    keyboardType:
-                                        const TextInputType.numberWithOptions(
-                                            decimal: true),
-                                    prefixIcon: Icons.scale_outlined,
-                                    validator: (value) {
-                                      final capacity =
-                                          double.tryParse(value?.trim() ?? '');
-                                      return (value?.trim().isNotEmpty ??
-                                                  false) &&
-                                              (capacity == null ||
-                                                  !capacity.isFinite ||
-                                                  capacity <= 0)
-                                          ? 'Enter a positive food weight in kilograms, or leave blank.'
-                                          : null;
-                                    },
-                                  ),
-                                  const SizedBox(height: AppSpacing.sm),
-                                  Text(
-                                    'This is the maximum weight for one donation, separate from people served each day.',
+                                    _phoneVerified
+                                        ? 'Your phone is verified and linked to this Firebase account.'
+                                        : 'Link a verified phone to accept deliveries and complete protected handover actions.',
                                     style:
                                         Theme.of(context).textTheme.bodySmall,
+                                    textAlign: TextAlign.center,
                                   ),
-                                  const SizedBox(height: AppSpacing.md),
-                                  OperatingHoursFields(
-                                    requiredForMatching: false,
-                                    value: (
-                                      from: _availableFrom,
-                                      to: _availableTo,
+                                  if (!_phoneVerified &&
+                                      linkedFirebasePhone?.isNotEmpty == true)
+                                    OutlinedButton(
+                                      onPressed: _phoneVerificationBusy
+                                          ? null
+                                          : () => _syncLinkedPhone(
+                                              linkedFirebasePhone!),
+                                      child: const Text(
+                                          'USE LINKED FIREBASE PHONE'),
+                                    )
+                                  else if (!_phoneVerified &&
+                                      _phoneVerificationId == null)
+                                    OutlinedButton(
+                                      onPressed: _phoneVerificationBusy
+                                          ? null
+                                          : _startPhoneVerification,
+                                      child: Text(_phoneVerificationBusy
+                                          ? 'SENDING CODE…'
+                                          : 'VERIFY PHONE NUMBER'),
                                     ),
-                                    onChanged: (hours) => setState(() {
-                                      _availableFrom = hours.from;
-                                      _availableTo = hours.to;
-                                    }),
-                                  ),
+                                  if (!_phoneVerified &&
+                                      _phoneVerificationId != null) ...[
+                                    TextField(
+                                      controller: _phoneVerificationCode,
+                                      keyboardType: TextInputType.number,
+                                      textInputAction: TextInputAction.done,
+                                      decoration: const InputDecoration(
+                                        labelText: 'SMS verification code',
+                                      ),
+                                    ),
+                                    OutlinedButton(
+                                      onPressed: _phoneVerificationBusy
+                                          ? null
+                                          : _verifyPhoneCode,
+                                      child: Text(_phoneVerificationBusy
+                                          ? 'VERIFYING…'
+                                          : 'CONFIRM PHONE CODE'),
+                                    ),
+                                    TextButton(
+                                      onPressed: _phoneVerificationBusy
+                                          ? null
+                                          : _startPhoneVerification,
+                                      child: const Text('RESEND CODE'),
+                                    ),
+                                  ],
+                                ],
+                                if (widget.role == UserRole.provider ||
+                                    widget.role == UserRole.ngo) ...[
                                   const SizedBox(height: AppSpacing.md),
-                                  Align(
-                                    alignment: Alignment.centerLeft,
-                                    child: Text(
-                                      'Preferred food categories',
+                                  const SectionHeader(
+                                      title: 'Organization profile'),
+                                  const SizedBox(height: AppSpacing.sm),
+                                  _field(_organization, 'Organization name'),
+                                  _field(_address, 'Address', maxLines: 2),
+                                  _field(_city, 'City'),
+                                  if (widget.role == UserRole.ngo)
+                                    _field(
+                                        _registration, 'Registration number'),
+                                  if (widget.role == UserRole.ngo) ...[
+                                    const SizedBox(height: AppSpacing.md),
+                                    const SectionHeader(
+                                        title: 'Matching preferences'),
+                                    const SizedBox(height: AppSpacing.sm),
+                                    Text(
+                                      _latitude == null ||
+                                              _availableFrom == null ||
+                                              _availableTo == null ||
+                                              _maxDonationCapacityKg.text
+                                                  .trim()
+                                                  .isEmpty ||
+                                              _ngoFoodTypes.isEmpty ||
+                                              _ngoDietaryPreferences.isEmpty
+                                          ? 'Complete your profile details to appear in matching results.'
+                                          : 'Matching location, hours, food preferences, and capacity are set.',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            color: _latitude == null ||
+                                                    _availableFrom == null ||
+                                                    _availableTo == null ||
+                                                    _maxDonationCapacityKg.text
+                                                        .trim()
+                                                        .isEmpty ||
+                                                    _ngoFoodTypes.isEmpty ||
+                                                    _ngoDietaryPreferences
+                                                        .isEmpty
+                                                ? c.danger
+                                                : c.green,
+                                          ),
+                                    ),
+                                    const SizedBox(height: AppSpacing.md),
+                                    AppInputField(
+                                      label: 'Maximum donation amount (kg)',
+                                      controller: _maxDonationCapacityKg,
+                                      keyboardType:
+                                          const TextInputType.numberWithOptions(
+                                              decimal: true),
+                                      prefixIcon: Icons.scale_outlined,
+                                      validator: (value) {
+                                        final capacity = double.tryParse(
+                                            value?.trim() ?? '');
+                                        return (value?.trim().isNotEmpty ??
+                                                    false) &&
+                                                (capacity == null ||
+                                                    !capacity.isFinite ||
+                                                    capacity <= 0)
+                                            ? 'Enter a positive food weight in kilograms, or leave blank.'
+                                            : null;
+                                      },
+                                    ),
+                                    const SizedBox(height: AppSpacing.sm),
+                                    Text(
+                                      'This is the maximum weight for one donation, separate from people served each day.',
                                       style:
-                                          Theme.of(context).textTheme.bodyLarge,
+                                          Theme.of(context).textTheme.bodySmall,
                                     ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Wrap(
-                                    spacing: 8,
-                                    runSpacing: 8,
-                                    children: _kFoodCategories.map((category) {
-                                      final selected =
-                                          _ngoFoodTypes.contains(category);
-                                      return FilterChip(
-                                        label: Text(category),
-                                        selected: selected,
-                                        onSelected: (value) => setState(() {
-                                          if (value) {
-                                            _ngoFoodTypes.add(category);
-                                          } else {
-                                            _ngoFoodTypes.remove(category);
-                                          }
-                                        }),
-                                      );
-                                    }).toList(),
-                                  ),
-                                  const SizedBox(height: AppSpacing.md),
-                                  Align(
-                                    alignment: Alignment.centerLeft,
+                                    const SizedBox(height: AppSpacing.md),
+                                    OperatingHoursFields(
+                                      requiredForMatching: false,
+                                      value: (
+                                        from: _availableFrom,
+                                        to: _availableTo,
+                                      ),
+                                      onChanged: (hours) => setState(() {
+                                        _availableFrom = hours.from;
+                                        _availableTo = hours.to;
+                                      }),
+                                    ),
+                                    const SizedBox(height: AppSpacing.md),
+                                    const SectionHeader(
+                                        title: 'Preferred food categories'),
+                                    const SizedBox(height: AppSpacing.sm),
+                                    Wrap(
+                                      spacing: 8,
+                                      runSpacing: 8,
+                                      children:
+                                          _kFoodCategories.map((category) {
+                                        final selected =
+                                            _ngoFoodTypes.contains(category);
+                                        return FilterChip(
+                                          label: Text(category),
+                                          selected: selected,
+                                          onSelected: (value) => setState(() {
+                                            if (value) {
+                                              _ngoFoodTypes.add(category);
+                                            } else {
+                                              _ngoFoodTypes.remove(category);
+                                            }
+                                          }),
+                                        );
+                                      }).toList(),
+                                    ),
+                                    const SizedBox(height: AppSpacing.md),
+                                    const SectionHeader(
+                                        title: 'Dietary types accepted'),
+                                    const SizedBox(height: AppSpacing.sm),
+                                    Wrap(
+                                      spacing: 8,
+                                      runSpacing: 8,
+                                      children: _kDietaryPreferenceLabels
+                                          .entries
+                                          .map((entry) {
+                                        final selected = _ngoDietaryPreferences
+                                            .contains(entry.key);
+                                        return FilterChip(
+                                          label: Text(entry.value),
+                                          selected: selected,
+                                          onSelected: (value) => setState(() {
+                                            if (value) {
+                                              _ngoDietaryPreferences
+                                                  .add(entry.key);
+                                            } else {
+                                              _ngoDietaryPreferences
+                                                  .remove(entry.key);
+                                            }
+                                          }),
+                                        );
+                                      }).toList(),
+                                    ),
+                                    const SizedBox(height: AppSpacing.md),
+                                    const SectionHeader(
+                                        title: 'Vehicle availability'),
+                                    Wrap(
+                                      spacing: 8,
+                                      children: <(bool?, String)>[
+                                        (null, 'Not answered'),
+                                        (true, 'Available'),
+                                        (false, 'Unavailable'),
+                                      ].map((choice) {
+                                        return ChoiceChip(
+                                          label: Text(choice.$2),
+                                          selected:
+                                              _ngoVehicleAvailable == choice.$1,
+                                          onSelected: (selected) {
+                                            if (!selected) return;
+                                            setState(() {
+                                              _ngoVehicleAvailable = choice.$1;
+                                              _ngoVehicleChanged = true;
+                                            });
+                                          },
+                                        );
+                                      }).toList(),
+                                    ),
+                                    const SizedBox(height: AppSpacing.md),
+                                  ],
+                                  _field(_description, 'Description',
+                                      maxLines: 4),
+                                  _field(_googleReviewUrl,
+                                      'Official Google Maps listing / review link'),
+                                  const Padding(
+                                    padding:
+                                        EdgeInsets.only(bottom: AppSpacing.md),
                                     child: Text(
-                                      'Dietary types accepted',
-                                      style:
-                                          Theme.of(context).textTheme.bodyLarge,
+                                      'Paste the share link for your official Google Maps listing. Reviews open in Google Maps and must reflect genuine experiences.',
+                                      style: TextStyle(fontSize: 12),
                                     ),
                                   ),
-                                  const SizedBox(height: 8),
-                                  Wrap(
-                                    spacing: 8,
-                                    runSpacing: 8,
-                                    children: _kDietaryPreferenceLabels.entries
-                                        .map((entry) {
-                                      final selected = _ngoDietaryPreferences
-                                          .contains(entry.key);
-                                      return FilterChip(
-                                        label: Text(entry.value),
-                                        selected: selected,
-                                        onSelected: (value) => setState(() {
-                                          if (value) {
-                                            _ngoDietaryPreferences
-                                                .add(entry.key);
-                                          } else {
-                                            _ngoDietaryPreferences
-                                                .remove(entry.key);
-                                          }
-                                        }),
-                                      );
-                                    }).toList(),
-                                  ),
-                                  const SizedBox(height: AppSpacing.md),
-                                  Align(
-                                    alignment: Alignment.centerLeft,
-                                    child: Text(
-                                      'Vehicle availability',
-                                      style:
-                                          Theme.of(context).textTheme.bodyLarge,
-                                    ),
-                                  ),
-                                  Wrap(
-                                    spacing: 8,
-                                    children: <(bool?, String)>[
-                                      (null, 'Not answered'),
-                                      (true, 'Available'),
-                                      (false, 'Unavailable'),
-                                    ].map((choice) {
-                                      return ChoiceChip(
-                                        label: Text(choice.$2),
-                                        selected:
-                                            _ngoVehicleAvailable == choice.$1,
-                                        onSelected: (selected) {
-                                          if (!selected) return;
-                                          setState(() {
-                                            _ngoVehicleAvailable = choice.$1;
-                                            _ngoVehicleChanged = true;
-                                          });
-                                        },
-                                      );
-                                    }).toList(),
+                                  OutlinedButton.icon(
+                                    onPressed: _saving ? null : _chooseLocation,
+                                    icon: const Icon(Icons.map_outlined),
+                                    label: Text(_latitude == null
+                                        ? 'Choose location on map (needed for matching)'
+                                        : 'Location chosen — tap to change'),
                                   ),
                                   const SizedBox(height: AppSpacing.md),
                                 ],
-                                _field(_description, 'Description',
-                                    maxLines: 4),
-                                _field(_googleReviewUrl,
-                                    'Official Google Maps listing / review link'),
-                                const Padding(
-                                  padding:
-                                      EdgeInsets.only(bottom: AppSpacing.md),
-                                  child: Text(
-                                    'Paste the share link for your official Google Maps listing. Reviews open in Google Maps and must reflect genuine experiences.',
-                                    style: TextStyle(fontSize: 12),
-                                  ),
+                                PrimaryButton(
+                                  label: 'SAVE CHANGES',
+                                  isLoading: _saving,
+                                  onPressed: _saving ? null : _save,
                                 ),
-                                OutlinedButton.icon(
-                                  onPressed: _saving ? null : _chooseLocation,
-                                  icon: const Icon(Icons.map_outlined),
-                                  label: Text(_latitude == null
-                                      ? 'Choose location on map (needed for matching)'
-                                      : 'Location chosen — tap to change'),
-                                ),
-                                const SizedBox(height: AppSpacing.md),
+                                const SizedBox(height: AppSpacing.lg),
                               ],
-                              PrimaryButton(
-                                label: 'SAVE CHANGES',
-                                isLoading: _saving,
-                                onPressed: _saving ? null : _save,
-                              ),
-                              const SizedBox(height: AppSpacing.lg),
-                            ],
+                            ),
                           ),
                         ),
                       ),

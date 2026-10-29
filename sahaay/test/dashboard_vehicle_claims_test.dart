@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:sahaay/main.dart';
 import 'package:sahaay/services/api_service.dart';
 import 'package:sahaay/services/firebase_auth_service.dart';
+import 'package:sahaay/services/permission_service.dart';
 import 'package:sahaay/services/profile_completion.dart';
 
 /// In-memory Firebase core so `FirebaseAuth.instance` resolves in widget
@@ -46,8 +47,12 @@ class _FakeApi extends ApiService {
 
   Map<String, dynamic> profile;
   List<dynamic> donations = <dynamic>[];
+  List<dynamic> deliveries = <dynamic>[];
   List<dynamic> claims = <dynamic>[];
   List<dynamic> providerClaims = <dynamic>[];
+  List<dynamic> notifications = <dynamic>[];
+  ApiException? notificationsError;
+  int notificationReads = 0;
   List<dynamic> ngoOffers = <dynamic>[];
   final List<Map<String, dynamic>> claimRequests = [];
   int ngoOfferReads = 0;
@@ -148,13 +153,20 @@ class _FakeApi extends ApiService {
   }
 
   @override
-  Future<List<dynamic>> getDeliveries() async => <dynamic>[];
+  Future<List<dynamic>> getDeliveries() async => deliveries;
 
   @override
   Future<List<dynamic>> getVolunteerTransportTasks() async => <dynamic>[];
 
   @override
   Future<List<dynamic>> getProviderClaims() async => providerClaims;
+
+  @override
+  Future<List<dynamic>> getNotifications() async {
+    notificationReads++;
+    if (notificationsError != null) throw notificationsError!;
+    return notifications;
+  }
 
   @override
   Future<List<dynamic>> getNgoDonationOffers() async {
@@ -314,6 +326,25 @@ class _FakeApi extends ApiService {
   Future<Map<String, dynamic>> setProviderVehicleAvailability(
           bool? available) =>
       _answer(available);
+}
+
+class _TestPermissionGateway implements PermissionGateway {
+  @override
+  Future<PermissionOutcome> status(AppPermission permission) async =>
+      PermissionOutcome.granted;
+
+  @override
+  Future<PermissionOutcome> request(AppPermission permission) async =>
+      PermissionOutcome.granted;
+
+  @override
+  Future<bool> isLocationServiceEnabled() async => true;
+
+  @override
+  Future<bool> openLocationSettings() async => true;
+
+  @override
+  Future<bool> openAppSettings() async => true;
 }
 
 class _FakeAppState extends AppState {
@@ -553,6 +584,11 @@ void _tallScreen(WidgetTester tester, {double height = 3600}) {
   tester.view.physicalSize = Size(1080, height);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
+}
+
+Future<void> _pumpTransition(WidgetTester tester) async {
+  await tester.pump(const Duration(milliseconds: 500));
+  await tester.pump();
 }
 
 void main() {
@@ -887,6 +923,70 @@ void main() {
       expect(find.text('5 deliveries'), findsOneWidget);
     });
 
+    testWidgets('My Deliveries empty state is horizontally centered',
+        (tester) async {
+      final api = _FakeApi(profile: _volunteerProfile(percentage: 100));
+      _tallScreen(tester);
+      await tester.pumpWidget(
+        _appWithState(const VolunteerDashboardScreen(), api),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.descendant(
+        of: find.byType(BottomNavigationBar),
+        matching: find.text('Deliveries'),
+      ));
+      await tester.pumpAndSettle();
+
+      final message = find.text('No accepted deliveries yet.');
+      expect(message, findsOneWidget);
+      final messageCenter = tester.getCenter(message);
+
+      expect(
+        messageCenter.dx,
+        closeTo(
+            tester.view.physicalSize.width / tester.view.devicePixelRatio / 2,
+            2),
+      );
+    });
+
+    testWidgets('My Deliveries populated cards fit a narrow viewport',
+        (tester) async {
+      final api = _FakeApi(profile: _volunteerProfile(percentage: 100))
+        ..deliveries = [
+          {
+            'id': 'delivery-ui-1',
+            'status': 'assigned',
+            'pickup_address': 'Community Kitchen with a long pickup label',
+            'delivery_address': 'Hope and Care Community Organization',
+            'donation': {
+              'food_name':
+                  'Fresh seasonal vegetable and lentil meal boxes for families',
+              'quantity': 14,
+            },
+          },
+        ];
+      tester.view.physicalSize = const Size(320, 2200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        _appWithState(const VolunteerDashboardScreen(), api),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.descendant(
+        of: find.byType(BottomNavigationBar),
+        matching: find.text('Deliveries'),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.textContaining('Fresh seasonal vegetable'), findsOneWidget);
+      expect(find.textContaining('Accepted'), findsOneWidget);
+      expect(
+        tester.getRect(find.byType(Scaffold).last).right,
+        lessThanOrEqualTo(320),
+      );
+    });
+
     testWidgets('NGO dashboard lists matching fields missing after enrollment',
         (tester) async {
       final api = _FakeApi(profile: _ngoProfile());
@@ -902,6 +1002,34 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Complete profile'), findsOneWidget);
+    });
+
+    testWidgets('profile header stays bounded with a long organization name',
+        (tester) async {
+      tester.view.physicalSize = const Size(320, 1200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(_appWithState(
+        const ProfileTab(
+          role: UserRole.ngo,
+          name: 'Community Food Relief and Neighborhood Support Foundation',
+        ),
+        _FakeApi(profile: _ngoProfile()),
+      ));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Your account'), findsOneWidget);
+      expect(
+        find.text(
+          'Community Food Relief and Neighborhood Support Foundation',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        tester.getRect(find.byType(Scaffold).first).right,
+        lessThanOrEqualTo(320),
+      );
     });
 
     testWidgets('100% NGO profile hides progress while verification is pending',
@@ -1223,6 +1351,30 @@ void main() {
   });
 
   group('Donation submission progress', () {
+    testWidgets('donation fields stack cleanly on a narrow screen',
+        (tester) async {
+      tester.view.physicalSize = const Size(360, 3600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final api = _FakeApi(profile: _completeProviderProfile());
+
+      await _prepareDonationForm(tester, api, selectFoodType: false);
+
+      final quantity =
+          tester.getRect(find.widgetWithText(TextFormField, 'Quantity (kg)'));
+      final servings =
+          tester.getRect(find.widgetWithText(TextFormField, 'Servings'));
+      final prepared =
+          tester.getRect(find.widgetWithText(TextFormField, 'Prepared (kg)'));
+      final sold =
+          tester.getRect(find.widgetWithText(TextFormField, 'Sold (kg)'));
+
+      expect(tester.takeException(), isNull);
+      expect(servings.top, greaterThan(quantity.bottom));
+      expect(sold.top, greaterThan(prepared.bottom));
+    });
+
     testWidgets('requires a dietary type and sends the selected type',
         (tester) async {
       final api = _FakeApi(profile: _completeProviderProfile());
@@ -1531,6 +1683,37 @@ void main() {
 
       expect(api.vehicleAnswers, [false]);
       expect(find.text('Vehicle Availability'), findsNothing);
+    });
+  });
+
+  group('Donation detail visual sections', () {
+    testWidgets('separates donation summary and pickup details into cards',
+        (tester) async {
+      final api = _FakeApi(profile: _ngoProfile());
+      final donation = Donation.fromBackend({
+        'id': 'donation-layout',
+        'food_name': 'Fresh meal boxes',
+        'food_category': 'prepared_meals',
+        'quantity': 8,
+        'servings': 16,
+        'pickup_address': '12 Main Road, Pune',
+        'status': 'available',
+      });
+      _tallScreen(tester);
+      await tester.pumpWidget(_appWithState(
+        DonationDetailScreen(
+          donation: donation,
+          onClaim: (_) async {},
+        ),
+        api,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Donation summary'), findsOneWidget);
+      expect(find.text('Pickup details'), findsOneWidget);
+      expect(find.text('Pickup location'), findsOneWidget);
+      expect(find.byType(Card), findsAtLeastNWidgets(3));
+      expect(tester.takeException(), isNull);
     });
   });
 
@@ -1883,22 +2066,22 @@ void main() {
     _tallScreen(tester);
     await tester
         .pumpWidget(_appWithState(const ProviderDashboardScreen(), api));
-    await tester.pumpAndSettle();
+    await _pumpTransition(tester);
     await tester.tap(find.descendant(
         of: find.byType(BottomNavigationBar),
         matching: find.text('Donations')));
-    await tester.pumpAndSettle();
+    await _pumpTransition(tester);
 
-    expect(find.text('Request NGO'), findsOneWidget);
-    await tester.tap(find.text('Request NGO'));
-    await tester.pumpAndSettle();
+    expect(find.text('View Matched NGOs'), findsOneWidget);
+    await tester.tap(find.text('View Matched NGOs'));
+    await _pumpTransition(tester);
 
     expect(api.persistedDonationOfferReads, 1);
     expect(api.manualMatchCalls, 0);
     expect(find.text('Trusted NGO'), findsOneWidget);
     expect(find.text('2.5 km driving'), findsWidgets);
     expect(find.text('Legacy NGO'), findsOneWidget);
-    expect(find.text('Distance unavailable'), findsOneWidget);
+    expect(find.text('Distance unavailable'), findsWidgets);
     expect(find.text('Match score: 88.4%'), findsOneWidget);
     expect(find.text('Matching rank #1'), findsOneWidget);
     expect(find.textContaining('Five-minute offer sent to ranked NGO #1'),
@@ -1908,7 +2091,7 @@ void main() {
     expect(find.text('Not available'), findsOneWidget);
 
     await tester.tap(find.text('Trusted NGO'));
-    await tester.pumpAndSettle();
+    await _pumpTransition(tester);
     expect(find.textContaining('saved candidate'), findsOneWidget);
     expect(find.text('2.5 km driving'), findsWidgets);
     expect(find.text('Distance score: 90 / 100'), findsOneWidget);
@@ -1930,14 +2113,165 @@ void main() {
     _tallScreen(tester);
     await tester
         .pumpWidget(_appWithState(const ProviderDashboardScreen(), api));
-    await tester.pumpAndSettle();
+    await _pumpTransition(tester);
     await tester.tap(find.descendant(
         of: find.byType(BottomNavigationBar),
         matching: find.text('Donations')));
-    await tester.pumpAndSettle();
+    await _pumpTransition(tester);
 
-    expect(find.text('Request NGO'), findsNothing);
+    expect(find.text('View Matched NGOs'), findsNothing);
     expect(api.persistedDonationOfferReads, 0);
+  });
+
+  testWidgets(
+      'matching controls stay readable and inside a narrow enlarged-text viewport',
+      (tester) async {
+    final api = _FakeApi(profile: _providerProfile())
+      ..donations = [
+        {
+          'id': 'donation-narrow',
+          'food_name': 'Fresh meals',
+          'food_category': 'prepared_meals',
+          'quantity': 10,
+          'servings': 20,
+          'status': 'available',
+          'pickup_address': '12 Main Road, Pune',
+          'pickup_deadline':
+              DateTime.now().add(const Duration(hours: 1)).toIso8601String(),
+          'expiry_time':
+              DateTime.now().add(const Duration(hours: 2)).toIso8601String(),
+        },
+      ]
+      ..persistedDonationOffers = {
+        'matching_state': 'active',
+        'current_offer': {
+          'status': 'pending',
+          'candidate_rank': 1,
+          'offer_expires_at':
+              DateTime.now().add(const Duration(minutes: 4)).toIso8601String(),
+        },
+        'ranked_candidates': <dynamic>[],
+      };
+    tester.view.physicalSize = const Size(320, 960);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(_appWithState(
+      Builder(
+        builder: (context) => MediaQuery(
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: const TextScaler.linear(1.4)),
+          child: const ProviderDashboardScreen(),
+        ),
+      ),
+      api,
+    ));
+    await _pumpTransition(tester);
+    await tester.tap(find.descendant(
+        of: find.byType(BottomNavigationBar),
+        matching: find.text('Donations')));
+    await _pumpTransition(tester);
+
+    final matchedButton = find.text('View Matched NGOs');
+    await tester.ensureVisible(matchedButton);
+    expect(tester.getRect(matchedButton).right, lessThanOrEqualTo(320));
+    await tester.tap(matchedButton);
+    await _pumpTransition(tester);
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.text('Donation details'), findsOneWidget);
+    final heading = find.text('Eligible NGOs');
+    final escalation = find.text('Escalate');
+    await tester.scrollUntilVisible(
+      heading,
+      320,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(heading, findsOneWidget);
+    expect(escalation, findsOneWidget);
+    await tester.ensureVisible(heading);
+    await tester.ensureVisible(escalation);
+    final headingRect = tester.getRect(heading);
+    final escalationRect = tester.getRect(escalation);
+    expect(headingRect.right, lessThanOrEqualTo(320), reason: '$headingRect');
+    expect(escalationRect.right, lessThanOrEqualTo(320),
+        reason: '$escalationRect');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('all three roles load and refresh persisted alerts',
+      (tester) async {
+    final api = _FakeApi(profile: _providerProfile())
+      ..notifications = [
+        {
+          'id': 'alert-1',
+          'related_donation_id': 'donation-1',
+          'title': 'Donation update',
+          'message': 'A real donation event was recorded.',
+          'type': 'new_nearby_donation',
+          'created_at': DateTime.now().toIso8601String(),
+          'is_read': false,
+        },
+      ];
+    final permissions = PermissionService(_TestPermissionGateway());
+
+    for (final role in const [
+      UserRole.provider,
+      UserRole.ngo,
+      UserRole.volunteer,
+    ]) {
+      api.notificationReads = 0;
+      await tester.pumpWidget(_appWithState(
+        NotificationsScreen(
+          key: ValueKey(role),
+          role: role,
+          embedded: true,
+          permissions: permissions,
+        ),
+        api,
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Donation update'), findsOneWidget);
+      expect(api.notificationReads, 1);
+      await tester.tap(find.byTooltip('Refresh notifications'));
+      await tester.pumpAndSettle();
+      expect(api.notificationReads, 2);
+      expect(tester.takeException(), isNull);
+    }
+  });
+
+  testWidgets('alerts show an explicit retry after backend failure',
+      (tester) async {
+    final api = _FakeApi(profile: _providerProfile())
+      ..notificationsError = const ApiException(503, 'Backend unavailable');
+    final permissions = PermissionService(_TestPermissionGateway());
+    await tester.pumpWidget(_appWithState(
+      NotificationsScreen(
+        role: UserRole.provider,
+        permissions: permissions,
+      ),
+      api,
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('Could not load notifications.'), findsOneWidget);
+
+    api.notificationsError = null;
+    api.notifications = [
+      {
+        'id': 'alert-retry',
+        'title': 'Donation submitted',
+        'message': 'Your donation was saved.',
+        'type': 'new_nearby_donation',
+        'created_at': DateTime.now().toIso8601String(),
+        'is_read': false,
+      },
+    ];
+    await tester.tap(find.text('Retry'));
+    await tester.pumpAndSettle();
+    expect(find.text('Donation submitted'), findsOneWidget);
+    expect(api.notificationReads, 2);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('persisted backend rank order is preserved in provider details',
@@ -2250,6 +2584,9 @@ void main() {
       expect(find.text('Stale Jeera Rice'), findsNothing);
       expect(find.text('Hope Foundation'), findsOneWidget);
       expect(find.text('Pune'), findsOneWidget);
+      expect(find.text('Food and pickup timing'), findsOneWidget);
+      expect(find.text('Provider / restaurant'), findsOneWidget);
+      expect(find.text('Receiving NGO'), findsOneWidget);
       expect(find.text('Claimed Donation'), findsOneWidget);
       expect(find.text('Claimed'), findsOneWidget);
       expect(find.text('accepted'), findsOneWidget);

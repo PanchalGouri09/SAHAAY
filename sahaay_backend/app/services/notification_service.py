@@ -317,6 +317,7 @@ def notify(
     """
     if not user_id or not title or not message:
         return None
+    event_type = notif_type or "info"
     title, message = safe_notification_copy(title, message)
     try:
         if dedupe and related_donation_id is not None and notif_type is not None:
@@ -327,6 +328,11 @@ def notify(
                 related_donation_id=related_donation_id,
                 title=title,
             ):
+                logger.info(
+                    "Notification dispatch stage=persist outcome=duplicate "
+                    "event_type=%s",
+                    event_type,
+                )
                 return None
         response = (
             client.table("notifications")
@@ -351,14 +357,21 @@ def notify(
         row = rows[0] if rows else None
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "Failed to persist notification type=%s error_type=%s",
-            notif_type or "info",
+            "Notification dispatch stage=persist outcome=failed "
+            "event_type=%s error_type=%s",
+            event_type,
             type(exc).__name__,
         )
         # Without a durable row there is nothing for the app to render or mark
         # read, so the push is deliberately skipped rather than sending an
         # orphan message.
         return None
+
+    logger.info(
+        "Notification dispatch stage=persist outcome=%s event_type=%s",
+        "success" if row is not None else "empty_result",
+        event_type,
+    )
 
     supplied_data = data if isinstance(data, dict) else {}
     payload = {"type": str(notif_type or "info")}
@@ -391,21 +404,35 @@ def notify(
             )
             if isinstance(delivery, dict):
                 logger.info(
-                    "Notification FCM outcome type=%s sent=%s failed=%s invalid=%s",
-                    notif_type or "info",
-                    delivery.get("sent", 0),
+                    "Notification dispatch stage=fcm outcome=completed "
+                    "event_type=%s accepted_by_fcm=%s failed=%s invalid=%s",
+                    event_type,
+                    delivery.get("accepted_by_fcm", 0),
                     delivery.get("failed", 0),
                     delivery.get("invalid", 0),
+                )
+            else:
+                logger.warning(
+                    "Notification dispatch stage=fcm outcome=invalid_result "
+                    "event_type=%s",
+                    event_type,
                 )
         except Exception as exc:  # noqa: BLE001
             # FCM unconfigured/unreachable: the record is already durable, so the
             # business transaction is untouched and the app will still show the
             # notification when it next reads the table.
-            logger.info(
-                "Notification FCM send raised type=%s error_type=%s",
-                notif_type or "info",
+            logger.warning(
+                "Notification dispatch stage=fcm outcome=failed "
+                "event_type=%s error_type=%s",
+                event_type,
                 type(exc).__name__,
             )
+    else:
+        logger.info(
+            "Notification dispatch stage=fcm outcome=unavailable "
+            "event_type=%s",
+            event_type,
+        )
     return row
 
 
@@ -427,14 +454,27 @@ def notify_many(client, user_ids, **kwargs) -> list[dict]:
 # raises.
 # ---------------------------------------------------------------------------
 def donation_created(client, *, donation: dict, provider_row: dict | None) -> None:
-    """A new donation was really created -> notify eligible verified NGOs in the same
-    city as the provider (the relevance rule this app already stores:
-    `ngos.city` / `providers.city`).
+    """Notify the owning provider and matching-ready NGOs after a real insert.
 
     Ranking/matching output is NEVER used as a recipient list — matching is a
     view, not a business event, and an AI ranking alone is not a claim.
     """
     try:
+        provider_user = user_id_for_provider(client, (provider_row or {}).get("id"))
+        food_name = donation.get("food_name") or "your donation"
+        notify(
+            client,
+            provider_user,
+            title="Donation submitted",
+            message=(
+                f"Your {food_name} donation was saved. "
+                "You can review its matching status in My Donations."
+            ),
+            notif_type="new_nearby_donation",
+            related_donation_id=donation.get("id"),
+            data={"screen": "donation_detail"},
+        )
+
         city = (provider_row or {}).get("city")
         if not city:
             return
@@ -808,6 +848,17 @@ def volunteer_transport_assigned(
             recipients.append(user_id_for_ngo(client, claim.get("ngo_id")))
         if donation:
             recipients.append(user_id_for_provider(client, donation.get("provider_id")))
+        volunteer_user = user_id_for_volunteer(client, delivery.get("volunteer_id"))
+        notify(
+            client,
+            volunteer_user,
+            title=f"Delivery assignment confirmed: {food_name}",
+            message=f"Your delivery assignment for {food_name} is confirmed.",
+            notif_type="volunteer_assigned",
+            related_donation_id=(donation or {}).get("id")
+            or delivery.get("donation_id"),
+            data={"screen": "deliveries"},
+        )
         notify_many(
             client,
             recipients,
@@ -867,6 +918,7 @@ def delivery_status_changed(
     * picked_up / in_transit  -> the claiming NGO (they are waiting for food)
     * delivered               -> NGO + provider (the donation is now completed)
     * failed/cancelled        -> NGO + provider, quoting the real failure reason
+    * every changed status    -> the assigned volunteer, when still assigned
 
     Any other status (e.g. a no-op update) notifies nobody.
     """
@@ -883,6 +935,7 @@ def delivery_status_changed(
             recipients.append(user_id_for_ngo(client, claim.get("ngo_id")))
         if new_status in {"delivered", "failed", "cancelled"} and donation:
             recipients.append(user_id_for_provider(client, donation.get("provider_id")))
+        recipients.append(user_id_for_volunteer(client, delivery.get("volunteer_id")))
         message = message_tmpl.format(food=food_name)
         if new_status in {"failed", "cancelled"} and failure_reason:
             detail = _safe_notification_copy(failure_reason, "", max_length=240)
@@ -912,6 +965,11 @@ def handover_verified(client, *, donation: dict | None, claim: dict | None) -> N
         ngo_user = user_id_for_ngo(client, (claim or {}).get("ngo_id"))
         if ngo_user and ngo_user not in recipients:
             recipients.append(ngo_user)
+        volunteer_user = user_id_for_claim_volunteer(
+            client, (claim or {}).get("id")
+        )
+        if volunteer_user and volunteer_user not in recipients:
+            recipients.append(volunteer_user)
         food_name = donation.get("food_name") or "your donation"
         notify_many(
             client,
@@ -936,6 +994,9 @@ def handover_completed(client, *, donation: dict | None, claim: dict | None) -> 
         ngo_user = user_id_for_ngo(client, claim.get("ngo_id"))
         if ngo_user and ngo_user not in recipients:
             recipients.append(ngo_user)
+        volunteer_user = user_id_for_claim_volunteer(client, claim.get("id"))
+        if volunteer_user and volunteer_user not in recipients:
+            recipients.append(volunteer_user)
         for user_id in recipients:
             notify(
                 client,
@@ -1033,6 +1094,9 @@ def acknowledgment_ready(
         ngo_user_id = user_id_for_ngo(client, claim.get("ngo_id"))
         if ngo_user_id and ngo_user_id not in recipients:
             recipients.append(ngo_user_id)
+        volunteer_user_id = user_id_for_claim_volunteer(client, claim.get("id"))
+        if volunteer_user_id and volunteer_user_id not in recipients:
+            recipients.append(volunteer_user_id)
         food_name = donation.get("food_name") or "your donation"
         for user_id in recipients:
             notify(
@@ -1051,6 +1115,26 @@ def acknowledgment_ready(
 # ---------------------------------------------------------------------------
 # Internal row lookups shared by the event functions (all best-effort)
 # ---------------------------------------------------------------------------
+def user_id_for_claim_volunteer(client, claim_id) -> str | None:
+    """Resolve the assigned delivery volunteer through its persisted claim link."""
+    if not claim_id:
+        return None
+    try:
+        row = (
+            client.table("deliveries")
+            .select("volunteer_id")
+            .eq("claim_id", str(claim_id))
+            .maybe_single()
+            .execute()
+        )
+        delivery = getattr(row, "data", None)
+        if not delivery:
+            return None
+        return user_id_for_volunteer(client, delivery.get("volunteer_id"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _donation_by_id(client, donation_id) -> dict | None:
     if not donation_id:
         return None
